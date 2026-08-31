@@ -41,4 +41,6 @@ ENV NODE_ENV=production
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-CMD ["pnpm", "start:prod"]
+# Postgres de produção começa vazio; sem isto o job closeStaleSessions
+# explode com P2021 (LogicalSession inexistente).
+CMD ["sh", "-c", "pnpm exec prisma migrate deploy && exec pnpm start:prod"]
