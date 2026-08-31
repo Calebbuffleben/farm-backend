@@ -1,0 +1,12 @@
+# Prisma migrate job image — build after (or instead of) tagging the app image.
+#
+#   docker build -t backend .
+#   docker build -f Dockerfile.migrate -t backend-migrate .
+#
+# Or one-shot from Hub base:
+#   docker build -f Dockerfile.migrate --build-arg BASE_IMAGE=backend -t backend-migrate .
+
+ARG BASE_IMAGE=backend
+FROM ${BASE_IMAGE}
+
+CMD ["prisma", "migrate", "deploy"]

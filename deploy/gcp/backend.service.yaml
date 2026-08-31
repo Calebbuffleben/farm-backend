@@ -1,0 +1,62 @@
+# Cloud Run multi-container: Envoy (ingress :8080) + Nest (HTTP :3001, gRPC :50052).
+# Placeholders filled by deploy/gcp/render-backend-service.py (CI / local):
+#   __REGION__ __SA_EMAIL__ __CLOUD_SQL__ __NEST_IMAGE__ __ENVOY_IMAGE__
+# Nest env list is injected by the render script (do not hand-edit secrets here).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    cloud.googleapis.com/location: __REGION__
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/cloudsql-instances: __CLOUD_SQL__
+        run.googleapis.com/container-dependencies: '{"envoy":["nest"]}'
+    spec:
+      serviceAccountName: __SA_EMAIL__
+      containerConcurrency: 80
+      timeoutSeconds: 3600
+      containers:
+        - name: envoy
+          image: __ENVOY_IMAGE__
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            failureThreshold: 24
+            periodSeconds: 5
+        - name: nest
+          image: __NEST_IMAGE__
+          env:
+            - name: PORT
+              value: "3001"
+            - name: GRPC_FEEDBACK_PORT
+              value: "50052"
+            - name: GRPC_TLS_TERMINATED_AT_EDGE
+              value: "true"
+            # __NEST_ENV_EXTRA__
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            failureThreshold: 36
+            periodSeconds: 5
+            timeoutSeconds: 5

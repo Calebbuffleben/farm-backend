@@ -1,0 +1,771 @@
+// Farm — inteligência comercial para revendas agrícolas.
+// Núcleo multi-tenant herdado do Meet (User global + Membership + JWT tid/mid).
+// Domínio novo: canal WABA, Conversation/LogicalSession, dimensões agro e
+// CommercialFact (grão analítico do dashboard).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenant core (herdado do Meet — não mexer sem ler docs/tenancy.md)
+// ---------------------------------------------------------------------------
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+}
+
+model Tenant {
+  id        String       @id @default(uuid())
+  slug      String       @unique
+  name      String
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  memberships   Membership[]
+  invitations   Invitation[]
+  subscription  Subscription?
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  wabaAccounts     WabaAccount[]
+  channelAccounts  ChannelAccount[]
+  channelEndpoints ChannelEndpoint[]
+  producers        Producer[]
+  farms            Farm[]
+  conversations    Conversation[]
+  commercialFacts  CommercialFact[]
+  consentRecords   ConsentRecord[]
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String?
+  name         String?
+  /// E.164 do RTV — destino do <Dial> na ponte PSTN (Fase 6 voz)
+  phone        String?
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  memberships   Membership[]
+  refreshTokens RefreshToken[]
+  sentInvites   Invitation[]   @relation("InvitationInvitedBy")
+
+  assignedNumbers     WabaNumber[]       @relation("WabaNumberAssignee")
+  assignedEndpoints   ChannelEndpoint[]  @relation("ChannelEndpointAssignee")
+  sentMessages        Message[]          @relation("MessageSender")
+  resolvedUnknowns   UnknownQueueItem[] @relation("UnknownResolvedBy")
+  humanEntityLinks   EntityLink[]       @relation("EntityLinkCreatedBy")
+}
+
+model Membership {
+  id        String         @id @default(uuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role      MembershipRole @default(MEMBER)
+  invitedBy String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model Invitation {
+  id          String         @id @default(uuid())
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email       String
+  role        MembershipRole @default(MEMBER)
+  tokenHash   String         @unique
+  status      InviteStatus   @default(PENDING)
+  invitedById String?
+  invitedBy   User?          @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, email])
+  @@index([expiresAt])
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  tenantId             String             @unique
+  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan                 Plan               @default(FREE)
+  maxUsers             Int                @default(3)
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@index([tenantId])
+}
+
+enum PendingCheckoutStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+}
+
+// Pre-tenant checkout row. Not tenant-scoped — created before Tenant exists.
+model PendingCheckout {
+  id                      String                @id @default(uuid())
+  email                   String
+  passwordHash            String
+  name                    String?
+  tenantName              String
+  tenantSlug              String
+  plan                    Plan
+  stripeCheckoutSessionId String?               @unique
+  status                  PendingCheckoutStatus @default(PENDING)
+  tenantId                String?
+  expiresAt               DateTime
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  @@index([email, status])
+  @@index([status, createdAt])
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membershipId String?
+  tokenHash    String    @unique
+  familyId     String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  createdByIp  String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([tenantId, userId])
+  @@index([familyId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  userId    String?
+  action    String
+  target    String?
+  ip        String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([action])
+}
+
+// Observabilidade operacional (herdado do Meet; stages novos: waba.webhook.received,
+// media.downloaded, stt.finished, resolver.finished, fact.published)
+model OperationalEvent {
+  id            String   @id @default(uuid())
+  timestamp     DateTime @default(now())
+  service       String
+  stage         String
+  message       String
+  tenantId      String?
+  conversationId String?
+  messageId     String?
+  userId        String?
+  traceId       String?
+  severity      String   @default("info")
+  durationMs    Int?
+  metadata      Json?
+
+  @@index([tenantId, timestamp])
+  @@index([conversationId, timestamp])
+  @@index([traceId])
+  @@index([stage, timestamp])
+}
+
+// ---------------------------------------------------------------------------
+// Canal WABA (tenant-scoped)
+// ---------------------------------------------------------------------------
+
+enum WabaProvider {
+  BSP_360DIALOG
+  META_DIRECT
+}
+
+enum WabaAccountStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+model WabaAccount {
+  id                String            @id @default(uuid())
+  tenantId          String
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider          WabaProvider      @default(BSP_360DIALOG)
+  /// WABA id na Meta (quando conhecido)
+  wabaExternalId    String?
+  /// Token da API do BSP, cifrado em repouso (AES-GCM com chave do ambiente)
+  apiTokenEncrypted String
+  webhookSecret     String?
+  status            WabaAccountStatus @default(PENDING)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  numbers        WabaNumber[]
+  channelAccount ChannelAccount?
+
+  @@index([tenantId])
+}
+
+model WabaNumber {
+  id             String      @id @default(uuid())
+  wabaAccountId  String
+  wabaAccount    WabaAccount @relation(fields: [wabaAccountId], references: [id], onDelete: Cascade)
+  /// phone_number_id da Cloud API — chave de roteamento do webhook
+  phoneNumberId  String      @unique
+  /// E.164 exibível (ex.: +5566999990000)
+  displayNumber  String
+  displayName    String?
+  /// RTV designado para este número ("João - Revenda X")
+  assignedUserId String?
+  assignedUser   User?       @relation("WabaNumberAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  conversations   Conversation[]
+  channelEndpoint ChannelEndpoint?
+
+  @@index([wabaAccountId])
+  @@index([assignedUserId])
+}
+
+// ---------------------------------------------------------------------------
+// Canal genérico (WABA / VOICE / EMAIL). WabaAccount continua o cofre do
+// token BSP; ChannelAccount/Endpoint são a identidade usada por Conversation.
+// ---------------------------------------------------------------------------
+
+enum ChannelKind {
+  WABA
+  VOICE
+  EMAIL
+}
+
+enum ChannelAccountStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+model ChannelAccount {
+  id     String      @id @default(uuid())
+  tenantId String
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind   ChannelKind
+  /// AES-GCM (mesma chave de waba-crypto). WABA: null — token fica em WabaAccount.
+  credentialsEncrypted String?
+  webhookSecret        String?
+  status ChannelAccountStatus @default(PENDING)
+  /// 1:1 com a conta WABA quando kind=WABA
+  wabaAccountId String?      @unique
+  wabaAccount   WabaAccount? @relation(fields: [wabaAccountId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  endpoints ChannelEndpoint[]
+
+  @@index([tenantId])
+}
+
+model ChannelEndpoint {
+  id               String         @id @default(uuid())
+  tenantId         String
+  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  channelAccountId String
+  channelAccount   ChannelAccount @relation(fields: [channelAccountId], references: [id], onDelete: Cascade)
+  /// Endereço nosso: phone_number_id (WABA), E.164 (VOICE), inbound@ (EMAIL)
+  address          String
+  displayAddress   String
+  assignedUserId   String?
+  assignedUser     User?          @relation("ChannelEndpointAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  /// 1:1 com WabaNumber quando kind=WABA
+  wabaNumberId     String?        @unique
+  wabaNumber       WabaNumber?    @relation(fields: [wabaNumberId], references: [id], onDelete: Cascade)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  conversations Conversation[]
+
+  @@unique([channelAccountId, address])
+  @@index([tenantId])
+  @@index([assignedUserId])
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Core
+// Conversation = identidade do relacionamento (endpoint do canal × peer).
+// NUNCA é o grão de contexto do LLM — isso é LogicalSession (fecha por
+// inatividade >24h ou quebra de assunto). Canais diferentes = conversas
+// diferentes; o dashboard agrega por producerId/farmId.
+// ---------------------------------------------------------------------------
+
+enum ConversationStatus {
+  OPEN
+  ARCHIVED
+}
+
+model Conversation {
+  id            String             @id @default(uuid())
+  tenantId      String
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  channelEndpointId String
+  channelEndpoint   ChannelEndpoint @relation(fields: [channelEndpointId], references: [id], onDelete: Cascade)
+  /// Peer no canal: E.164 (WABA/VOICE) ou e-mail normalizado (EMAIL)
+  peerAddress   String
+  /// Alias WABA — preenchido só quando o endpoint é WABA (inbox/BSP)
+  wabaNumberId  String?
+  wabaNumber    WabaNumber?        @relation(fields: [wabaNumberId], references: [id], onDelete: SetNull)
+  /// Alias de telefone (= peerAddress em WABA/VOICE)
+  producerPhone String?
+  /// Assunto da thread (EMAIL). Não é identidade — thread = (endpoint, peer).
+  emailSubject  String?
+  producerId    String?
+  producer      Producer?          @relation(fields: [producerId], references: [id], onDelete: SetNull)
+  status        ConversationStatus @default(OPEN)
+  lastMessageAt DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  sessions LogicalSession[]
+  messages Message[]
+
+  @@unique([channelEndpointId, peerAddress])
+  @@index([tenantId, lastMessageAt])
+  @@index([producerId])
+}
+
+enum SessionCloseReason {
+  INACTIVITY
+  TOPIC_SHIFT
+  MANUAL
+}
+
+model LogicalSession {
+  id             String              @id @default(uuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  startedAt      DateTime            @default(now())
+  endedAt        DateTime?
+  closeReason    SessionCloseReason?
+  /// Resumo curto da sessão fechada — insumo do RAG do resolver/extrator
+  summary        String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  messages Message[]
+
+  @@index([conversationId, startedAt])
+  @@index([tenantId, endedAt])
+}
+
+enum MessageDirection {
+  IN // produtor -> revenda
+  OUT // RTV -> produtor
+}
+
+enum MessageType {
+  TEXT
+  AUDIO
+  IMAGE
+  DOCUMENT
+  OTHER
+}
+
+enum MediaStatus {
+  NONE
+  PENDING_MEDIA
+  READY
+  FAILED
+}
+
+model Message {
+  id             String           @id @default(uuid())
+  tenantId       String
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sessionId      String?
+  session        LogicalSession?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  /// Id externo idempotente (prefixo por canal: wamid: / twilio: / email:).
+  /// Mensagens WABA já ingeridas podem permanecer sem prefixo.
+  wamid          String           @unique
+  direction      MessageDirection
+  type           MessageType
+  /// Texto da mensagem (quando TEXT) — nunca a transcrição
+  body           String?
+  /// Quem enviou (RTV) quando direction=OUT
+  senderUserId   String?
+  senderUser     User?            @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  mediaStatus    MediaStatus      @default(NONE)
+  /// Referência da mídia vinda do webhook (media id da Meta, URL efêmera,
+  /// mime, tentativas de download) — insumo do MediaWorker, nunca a fonte final
+  mediaRef       Json?
+  mediaAssetId   String?          @unique
+  mediaAsset     MediaAsset?      @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  /// Transcrição do áudio (STT batch, Fase 3)
+  transcript     String?
+  transcriptConfidence Float?
+  /// Copilot do RTV (pós-STT). Não é fato do gestor nem overlay ao vivo.
+  coachNote      String?
+  coachTone      String?
+  /// Timestamp da Meta (envio real), não o da ingestão
+  sentAt         DateTime
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  entityLinks EntityLink[]
+  facts       CommercialFact[]   @relation("FactEvidence")
+  unknownItems UnknownQueueItem[]
+
+  @@index([conversationId, sentAt])
+  @@index([tenantId, mediaStatus])
+  @@index([sessionId])
+}
+
+model MediaAsset {
+  id          String   @id @default(uuid())
+  tenantId    String
+  /// Chave no object storage do tenant (a URL da Meta expira — nunca é fonte)
+  storageKey  String
+  contentType String
+  sizeBytes   Int?
+  /// Duração de áudio em ms, quando aplicável
+  durationMs  Int?
+  sha256      String?
+  createdAt   DateTime @default(now())
+  /// Expurgo por política de retenção (LGPD)
+  expiresAt   DateTime?
+
+  message Message?
+
+  @@index([tenantId, createdAt])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Domínio agro (dimensões) — seed via import da carteira; o LLM nunca cria
+// Farm/Producer sozinho no ano 1.
+// ---------------------------------------------------------------------------
+
+model Producer {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name         String
+  externalErpId String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  phones        ProducerPhone[]
+  emails        ProducerEmail[]
+  farms         Farm[]
+  conversations Conversation[]
+  facts         CommercialFact[]
+  consents      ConsentRecord[]
+
+  @@index([tenantId, name])
+}
+
+model ProducerPhone {
+  id         String   @id @default(uuid())
+  tenantId   String
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  /// E.164 — chave de resolução telefone -> produtor
+  phone      String
+  label      String?
+  createdAt  DateTime @default(now())
+
+  @@unique([tenantId, phone])
+  @@index([producerId])
+}
+
+model ProducerEmail {
+  id         String   @id @default(uuid())
+  tenantId   String
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  /// E-mail normalizado (lowercase) — chave de resolução e-mail -> produtor
+  email      String
+  label      String?
+  createdAt  DateTime @default(now())
+
+  @@unique([tenantId, email])
+  @@index([producerId])
+}
+
+model Farm {
+  id            String   @id @default(uuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  producerId    String
+  producer      Producer @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  name          String
+  areaHa        Decimal? @db.Decimal(12, 2)
+  region        String?
+  externalErpId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cropSeasons CropSeason[]
+  entityLinks EntityLink[]
+  facts       CommercialFact[]
+  state       FarmState?
+
+  @@index([tenantId, name])
+  @@index([producerId])
+}
+
+model CropSeason {
+  id          String   @id @default(uuid())
+  tenantId    String
+  farmId      String
+  farm        Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  /// ex.: soja, milho_safrinha, algodao
+  crop        String
+  /// ex.: 2026/27
+  seasonLabel String
+  areaHa      Decimal? @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entityLinks EntityLink[]
+  facts       CommercialFact[]
+
+  @@unique([farmId, crop, seasonLabel])
+  @@index([tenantId, crop])
+}
+
+// ---------------------------------------------------------------------------
+// Resolução de entidade — MATRIZ: N links por mensagem (um áudio pode citar
+// 2+ fazendas). source=HUMAN vence LLM; nunca overwrite silencioso.
+// ---------------------------------------------------------------------------
+
+enum LinkSource {
+  LLM
+  HUMAN
+}
+
+model EntityLink {
+  id           String      @id @default(uuid())
+  tenantId     String
+  messageId    String
+  message      Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  farmId       String?
+  farm         Farm?       @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  cropSeasonId String?
+  cropSeason   CropSeason? @relation(fields: [cropSeasonId], references: [id], onDelete: SetNull)
+  /// Trecho da mensagem/transcrição que ancorou o vínculo
+  spanText     String?
+  confidence   Float
+  source       LinkSource
+  createdById  String?
+  createdBy    User?       @relation("EntityLinkCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime    @default(now())
+
+  @@index([messageId])
+  @@index([tenantId, farmId])
+}
+
+// ---------------------------------------------------------------------------
+// Camada analítica — o grão do dashboard. Uma mensagem gera 0..n fatos; cada
+// fato carrega o PRÓPRIO farmId (nunca herda "a fazenda da mensagem").
+// ---------------------------------------------------------------------------
+
+enum FactKind {
+  OBJECAO
+  RISCO
+  OPORTUNIDADE
+  FOLLOWUP
+  CONCORRENTE
+}
+
+enum FactSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum FactStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+model CommercialFact {
+  id           String       @id @default(uuid())
+  tenantId     String
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind         FactKind
+  /// Taxonomia agro fechada (8-12 valores), ex.: preco, confianca_produto,
+  /// logistica, janela_climatica, credito_prazo, concorrente_generico
+  subtype      String
+  severity     FactSeverity @default(INFO)
+  confidence   Float
+  status       FactStatus   @default(OPEN)
+  /// Dimensões — cada fato tem as suas (matriz de resolução)
+  farmId       String?
+  farm         Farm?        @relation(fields: [farmId], references: [id], onDelete: SetNull)
+  producerId   String?
+  producer     Producer?    @relation(fields: [producerId], references: [id], onDelete: SetNull)
+  cropSeasonId String?
+  cropSeason   CropSeason?  @relation(fields: [cropSeasonId], references: [id], onDelete: SetNull)
+  /// RTV da conversa (userId)
+  rtvUserId    String?
+  /// SKU/produto citado (chave livre no ano 1; catálogo em fase posterior)
+  productKey   String?
+  region       String?
+  /// Texto curto do fato para o card (ex.: "pressão por 5% de desconto no biológico X")
+  headline     String
+  /// Pista de dinheiro extraída do texto ("50 galões", "5% desconto") — não é R$ apurado
+  moneyHint    String?
+  /// Pista de prazo ("amanhã à tarde", "depois da chuva") + data resolvida quando possível
+  dueHintText  String?
+  dueAt        DateTime?
+  /// Evidência clicável — sem isso o dono não confia no número
+  evidenceMessageId String
+  evidenceMessage   Message  @relation("FactEvidence", fields: [evidenceMessageId], references: [id], onDelete: Cascade)
+  evidenceSpan      String?
+  /// Momento do fato = sentAt da mensagem de evidência (denormalizado p/ corte semanal)
+  occurredAt   DateTime
+  resolvedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, kind, occurredAt])
+  @@index([tenantId, farmId, status])
+  @@index([tenantId, rtvUserId, occurredAt])
+  @@index([tenantId, status, dueAt])
+}
+
+/// Estado comercial aberto da fazenda — materializado a partir dos fatos OPEN.
+/// Alimenta o card da fazenda no dashboard e o retrieve do resolver.
+model FarmState {
+  id          String   @id @default(uuid())
+  tenantId    String
+  farmId      String   @unique
+  farm        Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  /// Snapshot: últimos fatos abertos por kind, produtos em jogo, timing
+  openFacts   Json
+  lastFactAt  DateTime?
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, lastFactAt])
+}
+
+enum UnknownStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+/// Fila de resolução em 1 toque — mensagem/trecho que o resolver não vinculou
+/// com confiança suficiente. Nunca gravar chute como fato.
+model UnknownQueueItem {
+  id             String        @id @default(uuid())
+  tenantId       String
+  messageId      String
+  message        Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  spanText       String?
+  /// Candidatos sugeridos pelo resolver: [{farmId, confidence}]
+  candidates     Json?
+  status         UnknownStatus @default(PENDING)
+  resolvedFarmId String?
+  resolvedById   String?
+  resolvedBy     User?         @relation("UnknownResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt     DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([tenantId, status, createdAt])
+  @@index([messageId])
+}
+
+// ---------------------------------------------------------------------------
+// LGPD — produtor é o titular dos dados mesmo em canal corporativo.
+// ---------------------------------------------------------------------------
+
+enum ConsentPurpose {
+  CONVERSATION_ANALYSIS
+  MEDIA_RETENTION
+}
+
+model ConsentRecord {
+  id         String         @id @default(uuid())
+  tenantId   String
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  producerId String
+  producer   Producer       @relation(fields: [producerId], references: [id], onDelete: Cascade)
+  purpose    ConsentPurpose
+  /// Como foi obtido: template WABA de primeiro contato, contrato, etc.
+  source     String
+  grantedAt  DateTime       @default(now())
+  revokedAt  DateTime?
+
+  @@unique([producerId, purpose])
+  @@index([tenantId])
+}
