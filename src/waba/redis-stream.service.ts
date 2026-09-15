@@ -66,14 +66,26 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
     conversationId: string;
     sessionId: string;
     type: string;
-  }): Promise<void> {
-    if (!this.client) return;
+  }): Promise<boolean> {
+    if (!this.client) {
+      this.logger.warn(`publish skipped (no REDIS_URL) message=${fields.messageId}`);
+      return false;
+    }
     try {
-      await this.client.xAdd(MESSAGES_READY_STREAM, '*', fields);
+      await this.client.xAdd(MESSAGES_READY_STREAM, '*', {
+        messageId: String(fields.messageId),
+        tenantId: String(fields.tenantId),
+        conversationId: String(fields.conversationId),
+        sessionId: String(fields.sessionId),
+        type: String(fields.type),
+      });
+      this.logger.log(`published ${MESSAGES_READY_STREAM} message=${fields.messageId}`);
+      return true;
     } catch (err) {
       this.logger.error(
         `publishMessageReady failed for ${fields.messageId}: ${(err as Error).message}`,
       );
+      return false;
     }
   }
 }
