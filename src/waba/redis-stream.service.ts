@@ -41,6 +41,24 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
     return this.client;
   }
 
+  /**
+   * SET NX com TTL — trava um reprocesso (abrir o chat não pode XADD a cada poll).
+   * Sem Redis, devolve true: o publish em seguida já é no-op.
+   */
+  async claimOnce(key: string, ttlSec: number): Promise<boolean> {
+    if (!this.client) return true;
+    try {
+      const set = await this.client.set(`farm:kick:${key}`, '1', {
+        NX: true,
+        EX: ttlSec,
+      });
+      return set === 'OK';
+    } catch (err) {
+      this.logger.error(`claimOnce failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   /** XADD farm:messages:ready — nunca lança (ingestão não pode falhar por Redis). */
   async publishMessageReady(fields: {
     messageId: string;

@@ -17,6 +17,8 @@ import { emailOutboundSubject } from '../email/mailgun-parse';
 import { CoreIngestService } from '../channel/core-ingest.service';
 import { farmPublicUrl } from '../channel/public-origin';
 import { WaSessionService } from '../wa-session/wa-session.service';
+import { RedisStreamService } from './redis-stream.service';
+import { ConsentService } from '../consent/consent.service';
 import type { TenantContext } from '../tenancy/tenant-context.types';
 import {
   dealTemperature,
@@ -105,6 +107,8 @@ export class InboxService {
     private readonly email: EmailClient,
     private readonly core: CoreIngestService,
     private readonly waSession: WaSessionService,
+    private readonly stream: RedisStreamService,
+    private readonly consent: ConsentService,
   ) {}
 
   private numberScope(user: TenantContext) {
@@ -182,6 +186,7 @@ export class InboxService {
       },
       select: {
         id: true,
+        producerId: true,
         brief: { select: BRIEF_SELECT },
         messages: {
           orderBy: { sentAt: 'desc' },
@@ -192,11 +197,60 @@ export class InboxService {
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
     // Envelope: Nest devolve corpo vazio para `null` e o fetch do web quebra no .json()
-    return {
-      brief: conversation.brief
-        ? toBriefView(conversation.brief, conversation.messages[0], new Date())
-        : null,
-    };
+    if (conversation.brief) {
+      return {
+        brief: toBriefView(conversation.brief, conversation.messages[0], new Date()),
+        analysis: 'ready' as const,
+      };
+    }
+
+    const inbound = await this.prisma.message.findFirst({
+      where: {
+        tenantId: user.tenantId,
+        conversationId,
+        direction: 'IN',
+        OR: [
+          { type: 'TEXT', body: { not: null } },
+          { transcript: { not: null } },
+        ],
+      },
+      orderBy: { sentAt: 'desc' },
+      select: {
+        id: true,
+        tenantId: true,
+        conversationId: true,
+        sessionId: true,
+        type: true,
+      },
+    });
+    if (!inbound) {
+      return { brief: null, analysis: 'waiting_producer' as const };
+    }
+    if (!(await this.consent.canAnalyze(user.tenantId, conversation.producerId))) {
+      return { brief: null, analysis: 'blocked' as const };
+    }
+    // Mensagem do produtor já chegou, mas o DealBrief não — a fila original
+    // pode ter sido consumida em fail-open ou o worker estava fora. Reenfileira.
+    await this.kickAnalysis(inbound);
+    return { brief: null, analysis: 'pending' as const };
+  }
+
+  private async kickAnalysis(message: {
+    id: string;
+    tenantId: string;
+    conversationId: string;
+    sessionId: string | null;
+    type: string;
+  }): Promise<void> {
+    const claimed = await this.stream.claimOnce(message.id, 120);
+    if (!claimed) return;
+    await this.stream.publishMessageReady({
+      messageId: message.id,
+      tenantId: message.tenantId,
+      conversationId: message.conversationId,
+      sessionId: message.sessionId ?? '',
+      type: message.type,
+    });
   }
 
   async getConversationForUser(user: TenantContext, conversationId: string) {
