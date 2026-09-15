@@ -170,6 +170,33 @@ export class FactsIngestService {
           data: { summary: dto.sessionSummary },
         });
       }
+
+      // Situação do negócio: 1 por conversa, sempre a visão mais recente.
+      // Sem `deal` no payload, o brief anterior fica como está (fail-open).
+      if (dto.deal) {
+        const d = dto.deal;
+        const fields = {
+          producerId,
+          rtvUserId,
+          stage: d.stage,
+          stageConfidence: d.stageConfidence ?? 0.5,
+          contextSummary: d.contextSummary,
+          intent: d.intent,
+          urgency: d.urgency,
+          painPoint: d.painPoint ?? null,
+          nextAction: d.nextAction,
+          nextActionKind: d.nextActionKind,
+          nextActionDueAt: d.nextActionDueAt ? new Date(d.nextActionDueAt) : null,
+          blockerSubtype: d.blockerSubtype ?? null,
+          products: (d.products ?? []) as unknown as Prisma.JsonArray,
+          evidenceMessageId: messageId,
+        };
+        await tx.dealBrief.upsert({
+          where: { conversationId: message.conversationId },
+          create: { tenantId, conversationId: message.conversationId, ...fields },
+          update: fields,
+        });
+      }
     });
 
     for (const farmId of farmIds) {

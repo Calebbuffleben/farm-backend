@@ -19,13 +19,23 @@ import {
   applyCuts,
   buildHome,
   collectCuts,
+  isOverdueFollowup,
   rollingWindow,
   type DashboardCuts,
   type FactRow,
 } from './dashboard.queries';
+import {
+  applyDealCuts,
+  buildCommand,
+  toDealCard,
+  type DealRow,
+} from './dashboard.command';
+import type { DealLevel, DealStage } from './deal-temperature';
 
 /** Teto: dashboard do ano 1 cabe em memória. Upgrade: paginar por pergunta. */
 const OPEN_FACT_CAP = 2000;
+/** Mesmo teto para briefs: 1 por conversa, cabe em memória no ano 1. */
+const DEAL_CAP = 2000;
 
 @Injectable()
 export class DashboardService {
@@ -50,7 +60,242 @@ export class DashboardService {
     const all = await this.withRtvNames(raw);
     const filtered = applyCuts(all, cuts);
     const home = buildHome(filtered, now, window, unknownPending);
-    return { ...home, cuts: collectCuts(all) };
+
+    // Centro de Comando: briefs + fatos abertos da mesma carga, mesmos cortes.
+    const deals = await this.loadDeals(tenantId, all, now);
+    const command = buildCommand(applyDealCuts(deals, cuts), now);
+
+    return { ...home, ...command, cuts: this.mergeCuts(collectCuts(all), deals) };
+  }
+
+  /** Drawer do negócio: brief + temperatura + fatos abertos com evidência. */
+  async getDeal(tenantId: string, userId: string, conversationId: string) {
+    const now = new Date();
+    const brief = await this.prisma.dealBrief.findFirst({
+      where: { tenantId, conversationId },
+      include: {
+        conversation: {
+          select: {
+            producerPhone: true,
+            peerAddress: true,
+            producer: {
+              select: {
+                id: true,
+                name: true,
+                farms: { select: { id: true, name: true, region: true } },
+              },
+            },
+            messages: {
+              orderBy: { sentAt: 'desc' },
+              take: 1,
+              select: { sentAt: true, direction: true },
+            },
+          },
+        },
+      },
+    });
+    if (!brief) throw new NotFoundException('Negócio sem brief ainda');
+
+    const facts = await this.prisma.commercialFact.findMany({
+      where: {
+        tenantId,
+        status: 'OPEN',
+        evidenceMessage: { conversationId },
+      },
+      orderBy: { occurredAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        kind: true,
+        subtype: true,
+        severity: true,
+        headline: true,
+        moneyHint: true,
+        dueHintText: true,
+        dueAt: true,
+        occurredAt: true,
+        productKey: true,
+        evidenceMessageId: true,
+        evidenceSpan: true,
+        farm: { select: { name: true } },
+      },
+    });
+
+    const rtv = brief.rtvUserId
+      ? await this.prisma.user.findUnique({
+          where: { id: brief.rtvUserId },
+          select: { name: true, email: true },
+        })
+      : null;
+
+    const last = brief.conversation.messages[0];
+    const card = toDealCard(
+      {
+        conversationId,
+        producerId: brief.producerId,
+        producerName: brief.conversation.producer?.name ?? null,
+        producerPhone:
+          brief.conversation.producerPhone ?? brief.conversation.peerAddress,
+        farmNames: brief.conversation.producer?.farms.map((f) => f.name) ?? [],
+        rtvUserId: brief.rtvUserId,
+        rtvName: rtv?.name?.trim() || rtv?.email || null,
+        stage: brief.stage as DealStage,
+        stageConfidence: brief.stageConfidence,
+        contextSummary: brief.contextSummary,
+        intent: brief.intent as DealLevel,
+        urgency: brief.urgency as DealLevel,
+        painPoint: brief.painPoint,
+        nextAction: brief.nextAction,
+        nextActionKind: brief.nextActionKind,
+        nextActionDueAt: brief.nextActionDueAt,
+        blockerSubtype: brief.blockerSubtype,
+        products: Array.isArray(brief.products) ? (brief.products as string[]) : [],
+        updatedAt: brief.updatedAt,
+        lastMessageAt: last?.sentAt ?? null,
+        lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
+        openComplaints: facts.filter((f) => f.kind === 'OBJECAO' || f.kind === 'RISCO').length,
+        overdueFollowups: facts.filter((f) =>
+          f.kind === 'FOLLOWUP' && f.dueAt !== null && f.dueAt.getTime() <= now.getTime(),
+        ).length,
+        moneyHints: facts.map((f) => f.moneyHint).filter((m): m is string => Boolean(m)),
+        crops: [],
+        regions: [],
+        productKeys: [],
+        farmIds: [],
+      },
+      now,
+    );
+
+    this.ops.audit({
+      tenantId,
+      userId,
+      action: 'dashboard.deal.view',
+      target: conversationId,
+      metadata: { evidenceMessageId: brief.evidenceMessageId },
+    });
+
+    return {
+      ...card,
+      stageConfidence: brief.stageConfidence,
+      evidenceMessageId: brief.evidenceMessageId,
+      facts: facts.map((f) => ({
+        id: f.id,
+        kind: f.kind,
+        subtype: f.subtype,
+        severity: f.severity,
+        headline: f.headline,
+        moneyHint: f.moneyHint,
+        dueHintText: f.dueHintText,
+        dueAt: f.dueAt,
+        occurredAt: f.occurredAt,
+        productKey: f.productKey,
+        farmName: f.farm?.name ?? null,
+        evidenceMessageId: f.evidenceMessageId,
+        evidenceSpan: f.evidenceSpan,
+        conversationId,
+      })),
+    };
+  }
+
+  /**
+   * DealBrief + última mensagem por conversa. Fatos abertos vêm da carga já
+   * feita para as 5 perguntas (mesma janela) — nada de segunda varredura.
+   */
+  private async loadDeals(
+    tenantId: string,
+    facts: FactRow[],
+    now: Date,
+  ): Promise<DealRow[]> {
+    const briefs = await this.prisma.dealBrief.findMany({
+      where: { tenantId },
+      orderBy: { updatedAt: 'desc' },
+      take: DEAL_CAP,
+      include: {
+        conversation: {
+          select: {
+            producerPhone: true,
+            peerAddress: true,
+            producer: {
+              select: {
+                name: true,
+                farms: { select: { id: true, name: true, region: true } },
+              },
+            },
+            messages: {
+              orderBy: { sentAt: 'desc' },
+              take: 1,
+              select: { sentAt: true, direction: true },
+            },
+          },
+        },
+      },
+    });
+    if (!briefs.length) return [];
+
+    const factsByConversation = new Map<string, FactRow[]>();
+    for (const fact of facts) {
+      const list = factsByConversation.get(fact.conversationId);
+      if (list) list.push(fact);
+      else factsByConversation.set(fact.conversationId, [fact]);
+    }
+
+    const rtvIds = [
+      ...new Set(briefs.map((b) => b.rtvUserId).filter((id): id is string => Boolean(id))),
+    ];
+    const users = rtvIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: rtvIds } },
+          select: { id: true, name: true, email: true },
+        })
+      : [];
+    const names = new Map(users.map((u) => [u.id, u.name?.trim() || u.email] as const));
+
+    return briefs.map((b) => {
+      const convFacts = factsByConversation.get(b.conversationId) ?? [];
+      const farms = b.conversation.producer?.farms ?? [];
+      const last = b.conversation.messages[0];
+      const uniq = (values: Array<string | null>) =>
+        [...new Set(values.filter((v): v is string => Boolean(v)))];
+      return {
+        conversationId: b.conversationId,
+        producerId: b.producerId,
+        producerName: b.conversation.producer?.name ?? null,
+        producerPhone: b.conversation.producerPhone ?? b.conversation.peerAddress,
+        farmNames: farms.map((f) => f.name),
+        rtvUserId: b.rtvUserId,
+        rtvName: b.rtvUserId ? (names.get(b.rtvUserId) ?? null) : null,
+        stage: b.stage as DealStage,
+        stageConfidence: b.stageConfidence,
+        contextSummary: b.contextSummary,
+        intent: b.intent as DealLevel,
+        urgency: b.urgency as DealLevel,
+        painPoint: b.painPoint,
+        nextAction: b.nextAction,
+        nextActionKind: b.nextActionKind,
+        nextActionDueAt: b.nextActionDueAt,
+        blockerSubtype: b.blockerSubtype,
+        products: Array.isArray(b.products) ? (b.products as string[]) : [],
+        updatedAt: b.updatedAt,
+        lastMessageAt: last?.sentAt ?? null,
+        lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
+        openComplaints: convFacts.filter((f) => f.kind === 'OBJECAO' || f.kind === 'RISCO').length,
+        overdueFollowups: convFacts.filter((f) => isOverdueFollowup(f, now)).length,
+        moneyHints: uniq(convFacts.map((f) => f.moneyHint)),
+        crops: uniq(convFacts.map((f) => f.crop)),
+        regions: uniq([...convFacts.map((f) => f.region), ...farms.map((f) => f.region)]),
+        productKeys: uniq(convFacts.map((f) => f.productKey)),
+        farmIds: uniq([...convFacts.map((f) => f.farmId), ...farms.map((f) => f.id)]),
+      };
+    });
+  }
+
+  /** RTVs que só têm brief (sem fato na janela) também entram no filtro. */
+  private mergeCuts(cuts: ReturnType<typeof collectCuts>, deals: DealRow[]) {
+    const rtvs = new Map(cuts.rtvs.map((r) => [r.id, r.name] as const));
+    for (const d of deals) {
+      if (d.rtvUserId && !rtvs.has(d.rtvUserId)) rtvs.set(d.rtvUserId, d.rtvName ?? d.rtvUserId);
+    }
+    return { ...cuts, rtvs: [...rtvs.entries()].map(([id, name]) => ({ id, name })) };
   }
 
   async getFact(tenantId: string, userId: string, factId: string) {

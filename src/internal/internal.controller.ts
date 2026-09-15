@@ -131,7 +131,32 @@ export class InternalController {
       take: 50,
     });
 
+    // Política comercial (alçada) + brief anterior: o LLM refina em vez de recomeçar.
+    const [tenant, previousBrief] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { salesPolicy: true },
+      }),
+      this.prisma.dealBrief.findUnique({
+        where: { conversationId: message.conversationId },
+        select: {
+          stage: true,
+          contextSummary: true,
+          intent: true,
+          urgency: true,
+          painPoint: true,
+          nextAction: true,
+          nextActionKind: true,
+          blockerSubtype: true,
+          products: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
     return {
+      salesPolicy: tenant?.salesPolicy ?? null,
+      previousBrief,
       message: {
         id: message.id,
         tenantId,

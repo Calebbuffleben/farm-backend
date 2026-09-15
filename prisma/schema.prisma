@@ -53,6 +53,9 @@ model Tenant {
   slug      String       @unique
   name      String
   status    TenantStatus @default(ACTIVE)
+  /// Política comercial que o Next Best Action pode citar:
+  /// { discountAuthorityPct?: number, notes?: string }
+  salesPolicy Json?
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
@@ -70,6 +73,7 @@ model Tenant {
   conversations    Conversation[]
   commercialFacts  CommercialFact[]
   consentRecords   ConsentRecord[]
+  dealBriefs       DealBrief[]
 }
 
 model User {
@@ -395,6 +399,7 @@ model Conversation {
 
   sessions LogicalSession[]
   messages Message[]
+  brief    DealBrief?
 
   @@unique([channelEndpointId, peerAddress])
   @@index([tenantId, lastMessageAt])
@@ -720,6 +725,62 @@ model FarmState {
   updatedAt   DateTime @updatedAt
 
   @@index([tenantId, lastFactAt])
+}
+
+// ---------------------------------------------------------------------------
+// Situação do negócio — 1 por Conversation, escrita pelo worker na mesma
+// análise dos fatos. Estágio + resumo executivo + próximo passo. Temperatura
+// (HOT/WARM/COOLING/COLD) NÃO é coluna: regra pura em dashboard/deal-temperature.ts.
+// ---------------------------------------------------------------------------
+
+enum DealStage {
+  SONDAGEM
+  NEGOCIACAO
+  FECHAMENTO
+  POS_VENDA
+  SEM_NEGOCIO
+}
+
+enum DealLevel {
+  BAIXA
+  MEDIA
+  ALTA
+}
+
+model DealBrief {
+  id              String       @id @default(uuid())
+  tenantId        String
+  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversationId  String       @unique
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  /// Denormalizados para o radar por RTV / pipeline por produtor
+  producerId      String?
+  rtvUserId       String?
+  stage           DealStage    @default(SEM_NEGOCIO)
+  stageConfidence Float        @default(0)
+  /// Contexto central: o que motivou a conversa
+  contextSummary  String
+  intent          DealLevel    @default(MEDIA)
+  urgency         DealLevel    @default(MEDIA)
+  /// Dor / objeção oculta — o que impede a venda agora
+  painPoint       String?
+  /// Next Best Action (texto acionável para o RTV)
+  nextAction      String
+  /// proposta | followup | logistica | ligar | escalar_gestor | aguardar | pos_venda
+  nextActionKind  String       @default("aguardar")
+  nextActionDueAt DateTime?
+  /// Gargalo — mesmo vocabulário de CommercialFact.subtype (preco, logistica…)
+  blockerSubtype  String?
+  /// Produtos/insumos em jogo: string[]
+  products        Json?
+  /// Última mensagem analisada que gerou este brief
+  evidenceMessageId String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([tenantId, stage])
+  @@index([tenantId, rtvUserId])
+  @@index([tenantId, producerId])
 }
 
 enum UnknownStatus {

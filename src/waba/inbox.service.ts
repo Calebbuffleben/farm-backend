@@ -18,8 +18,78 @@ import { CoreIngestService } from '../channel/core-ingest.service';
 import { farmPublicUrl } from '../channel/public-origin';
 import { WaSessionService } from '../wa-session/wa-session.service';
 import type { TenantContext } from '../tenancy/tenant-context.types';
+import {
+  dealTemperature,
+  type DealLevel,
+  type DealStage,
+} from '../dashboard/deal-temperature';
 
 const ADMIN_ROLES = new Set(['OWNER', 'ADMIN', 'MANAGER']);
+
+const BRIEF_SELECT = {
+  stage: true,
+  stageConfidence: true,
+  contextSummary: true,
+  intent: true,
+  urgency: true,
+  painPoint: true,
+  nextAction: true,
+  nextActionKind: true,
+  nextActionDueAt: true,
+  blockerSubtype: true,
+  products: true,
+  evidenceMessageId: true,
+  updatedAt: true,
+} as const;
+
+type BriefRow = {
+  stage: string;
+  stageConfidence: number;
+  contextSummary: string;
+  intent: string;
+  urgency: string;
+  painPoint: string | null;
+  nextAction: string;
+  nextActionKind: string;
+  nextActionDueAt: Date | null;
+  blockerSubtype: string | null;
+  products: unknown;
+  evidenceMessageId: string;
+  updatedAt: Date;
+};
+
+/** Card de Bordo: brief + temperatura calculada na leitura. */
+function toBriefView(
+  brief: BriefRow,
+  last: { sentAt: Date; direction: string } | null | undefined,
+  now: Date,
+) {
+  return {
+    stage: brief.stage as DealStage,
+    stageConfidence: brief.stageConfidence,
+    temperature: dealTemperature(
+      {
+        stage: brief.stage as DealStage,
+        intent: brief.intent as DealLevel,
+        urgency: brief.urgency as DealLevel,
+        lastMessageAt: last?.sentAt ?? null,
+        lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
+      },
+      now,
+    ),
+    contextSummary: brief.contextSummary,
+    intent: brief.intent as DealLevel,
+    urgency: brief.urgency as DealLevel,
+    painPoint: brief.painPoint,
+    nextAction: brief.nextAction,
+    nextActionKind: brief.nextActionKind,
+    nextActionDueAt: brief.nextActionDueAt,
+    blockerSubtype: brief.blockerSubtype,
+    products: Array.isArray(brief.products) ? (brief.products as string[]) : [],
+    evidenceMessageId: brief.evidenceMessageId,
+    updatedAt: brief.updatedAt,
+  };
+}
 
 /**
  * Inbox do RTV. Escopo: MEMBER (RTV) enxerga apenas conversas dos números
@@ -44,12 +114,14 @@ export class InboxService {
   }
 
   async listConversations(user: TenantContext) {
+    const now = new Date();
     const conversations = await this.prisma.conversation.findMany({
       where: { tenantId: user.tenantId, ...this.numberScope(user) },
       orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }],
       take: 100,
       include: {
         producer: { select: { id: true, name: true } },
+        brief: { select: BRIEF_SELECT },
         wabaNumber: { select: { id: true, displayNumber: true } },
         channelEndpoint: {
           select: {
@@ -85,7 +157,46 @@ export class InboxService {
       emailSubject: c.emailSubject,
       lastMessageAt: c.lastMessageAt,
       lastMessage: c.messages[0] ?? null,
+      brief: c.brief
+        ? (() => {
+            const v = toBriefView(c.brief, c.messages[0], now);
+            return {
+              stage: v.stage,
+              temperature: v.temperature,
+              nextAction: v.nextAction,
+              nextActionKind: v.nextActionKind,
+              updatedAt: v.updatedAt,
+            };
+          })()
+        : null,
     }));
+  }
+
+  /** Card de Bordo completo. Respeita o mesmo escopo de número do RTV. */
+  async getBrief(user: TenantContext, conversationId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        tenantId: user.tenantId,
+        ...this.numberScope(user),
+      },
+      select: {
+        id: true,
+        brief: { select: BRIEF_SELECT },
+        messages: {
+          orderBy: { sentAt: 'desc' },
+          take: 1,
+          select: { sentAt: true, direction: true },
+        },
+      },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    // Envelope: Nest devolve corpo vazio para `null` e o fetch do web quebra no .json()
+    return {
+      brief: conversation.brief
+        ? toBriefView(conversation.brief, conversation.messages[0], new Date())
+        : null,
+    };
   }
 
   async getConversationForUser(user: TenantContext, conversationId: string) {

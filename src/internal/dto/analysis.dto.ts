@@ -111,8 +111,87 @@ export class AnalysisUnknownDto {
   candidates!: AnalysisUnknownCandidateDto[];
 }
 
+export const DEAL_STAGES = [
+  'SONDAGEM',
+  'NEGOCIACAO',
+  'FECHAMENTO',
+  'POS_VENDA',
+  'SEM_NEGOCIO',
+] as const;
+export const DEAL_LEVELS = ['BAIXA', 'MEDIA', 'ALTA'] as const;
+export const NEXT_ACTION_KINDS = [
+  'proposta',
+  'followup',
+  'logistica',
+  'ligar',
+  'escalar_gestor',
+  'aguardar',
+  'pos_venda',
+] as const;
+
+/** Situação do negócio da conversa inteira — vira DealBrief 1:1 por Conversation. */
+export class AnalysisDealDto {
+  @IsIn(DEAL_STAGES)
+  stage!: (typeof DEAL_STAGES)[number];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  stageConfidence?: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(600)
+  contextSummary!: string;
+
+  @IsIn(DEAL_LEVELS)
+  intent!: (typeof DEAL_LEVELS)[number];
+
+  @IsIn(DEAL_LEVELS)
+  urgency!: (typeof DEAL_LEVELS)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(400)
+  painPoint?: string | null;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(400)
+  nextAction!: string;
+
+  @IsIn(NEXT_ACTION_KINDS)
+  nextActionKind!: (typeof NEXT_ACTION_KINDS)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  nextActionDueHint?: string | null;
+
+  @IsOptional()
+  @IsISO8601()
+  nextActionDueAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  blockerSubtype?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  products?: string[];
+}
+
 /** Payload do POST /internal/messages/:id/analysis (worker Python → backend). */
 export class PublishAnalysisDto {
+  /** Ausente = worker não conseguiu classificar; o brief anterior é preservado. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AnalysisDealDto)
+  deal?: AnalysisDealDto;
+
   @IsOptional()
   @IsString()
   transcript?: string;

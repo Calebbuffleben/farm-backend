@@ -63,6 +63,17 @@ export class InboxController {
     return this.inbox.listConversations(user);
   }
 
+  /** Card de Bordo do RTV: situação do negócio escrita pela IA. `{ brief: null }` = ainda sem análise. */
+  @Get('conversations/:id/brief')
+  @SkipThrottle()
+  async getBrief(
+    @CurrentUser() user: TenantContext | undefined,
+    @Param('id') conversationId: string,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    return this.inbox.getBrief(user, conversationId);
+  }
+
   @Get('conversations/:id/messages')
   @SkipThrottle()
   async listMessages(
