@@ -302,6 +302,8 @@ enum ChannelKind {
   WABA
   VOICE
   EMAIL
+  /// WhatsApp do RTV via sessão (Evolution API auto-hospedada). Address = E.164 do RTV.
+  WA_SESSION
 }
 
 enum ChannelAccountStatus {
@@ -386,6 +388,8 @@ model Conversation {
   producer      Producer?          @relation(fields: [producerId], references: [id], onDelete: SetNull)
   status        ConversationStatus @default(OPEN)
   lastMessageAt DateTime?
+  /// Produtor pediu para parar de receber relatório automático (WA_SESSION).
+  reportOptOutAt DateTime?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 

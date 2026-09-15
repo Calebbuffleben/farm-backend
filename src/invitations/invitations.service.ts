@@ -24,6 +24,7 @@ import { AuthService } from '../auth/auth.service';
 import type { AuthSession } from '../auth/auth.service';
 import { planToMaxUsers } from '../billing/plan-limits';
 import { denyIfNotEntitled } from '../billing/entitlement';
+import { inviteAcceptUrl } from './invite-url';
 
 interface RequestMeta {
   ip?: string;
@@ -204,6 +205,7 @@ export class InvitationsService {
         createdAt: created.createdAt,
         invitedById: created.invitedById,
         token: tokenPlain,
+        inviteUrl: inviteAcceptUrl(tokenPlain),
       };
     });
   }

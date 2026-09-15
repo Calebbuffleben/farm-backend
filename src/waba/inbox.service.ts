@@ -16,6 +16,7 @@ import { parseEmailCredentials, EmailClient } from '../email/email.client';
 import { emailOutboundSubject } from '../email/mailgun-parse';
 import { CoreIngestService } from '../channel/core-ingest.service';
 import { farmPublicUrl } from '../channel/public-origin';
+import { WaSessionService } from '../wa-session/wa-session.service';
 import type { TenantContext } from '../tenancy/tenant-context.types';
 
 const ADMIN_ROLES = new Set(['OWNER', 'ADMIN', 'MANAGER']);
@@ -33,6 +34,7 @@ export class InboxService {
     private readonly voice: VoiceClient,
     private readonly email: EmailClient,
     private readonly core: CoreIngestService,
+    private readonly waSession: WaSessionService,
   ) {}
 
   private numberScope(user: TenantContext) {
@@ -147,6 +149,19 @@ export class InboxService {
     const kind = conversation.channelEndpoint.channelAccount.kind;
     if (kind === 'EMAIL') {
       return this.sendEmail(user, conversation, text, subject);
+    }
+    if (kind === 'WA_SESSION') {
+      // Porta trocável (Evolution/Baileys hoje, Evolution/Cloud API depois). Gate de sessão + teto do dia lá dentro.
+      const outbound = this.waSession.outboundFor(
+        conversation.channelEndpoint.channelAccount,
+        'inbox',
+      );
+      const vendorId = await outbound.sendText(conversation.peerAddress, text);
+      return this.persistOutgoing(user, conversation.id, {
+        wamid: `evo:${vendorId}`,
+        type: 'TEXT' as const,
+        body: text,
+      });
     }
     if (kind !== 'WABA') {
       throw new ForbiddenException('Envio de texto só no WABA ou e-mail');

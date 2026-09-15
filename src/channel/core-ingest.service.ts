@@ -47,6 +47,7 @@ const CONSENT_SOURCE: Record<ChannelKind, string> = {
   WABA: 'waba_first_contact',
   VOICE: 'voice_first_contact',
   EMAIL: 'email_first_contact',
+  WA_SESSION: 'waba_first_contact',
 };
 
 /**
@@ -206,7 +207,12 @@ export class CoreIngestService implements OnModuleInit, OnModuleDestroy {
         data: { lastMessageAt: n.sentAt, status: 'OPEN' },
       });
 
-      if (n.type === 'TEXT' && (await this.consent.canAnalyze(n.tenantId, producerId))) {
+      // OUT só chega aqui via WA_SESSION fromMe (RTV digitou no celular): guarda, não analisa.
+      if (
+        n.type === 'TEXT' &&
+        n.direction === 'IN' &&
+        (await this.consent.canAnalyze(n.tenantId, producerId))
+      ) {
         await this.stream.publishMessageReady({
           messageId: created.id,
           tenantId: n.tenantId,

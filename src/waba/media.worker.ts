@@ -19,6 +19,7 @@ import { OpsService } from '../ops/ops.service';
 import { parseVoiceCredentials, VoiceClient } from '../voice/voice.client';
 import { twilioRecordingUrl } from '../voice/twilio-media';
 import { parseEmailCredentials, EmailClient } from '../email/email.client';
+import { parseWaSessionCredentials, EvolutionClient } from '../wa-session/evolution.client';
 import {
   mediaExpiresAt,
   mediaRetentionDays,
@@ -42,6 +43,8 @@ interface MediaRef {
   url?: string | null;
   stagingKey?: string | null;
   fixtureName?: string | null;
+  /** Evolution: id da mensagem (key.id) para getBase64FromMediaMessage. */
+  messageId?: string | null;
   attempts?: number;
 }
 
@@ -67,6 +70,7 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
     private readonly ops: OpsService,
     private readonly voice: VoiceClient,
     private readonly email: EmailClient,
+    private readonly evolution: EvolutionClient,
   ) {}
 
   onModuleInit() {
@@ -153,7 +157,9 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
           ? await this.downloadTwilio(message, ref)
           : ref.vendor === 'mailgun'
             ? await this.downloadMailgun(message, ref)
-            : await this.downloadMeta(message, ref);
+            : ref.vendor === 'evolution'
+              ? await this.downloadEvolution(message, ref)
+              : await this.downloadMeta(message, ref);
 
     const contentType =
       ref.mimeType?.split(';')[0]?.trim() || downloaded.contentType;
@@ -304,6 +310,30 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
     return {
       data,
       contentType: ref.mimeType?.split(';')[0]?.trim() || 'application/octet-stream',
+    };
+  }
+
+  /** Evolution guarda a mensagem; pede o binário em base64 pelo key.id. */
+  private async downloadEvolution(
+    message: {
+      conversation: {
+        channelEndpoint: {
+          channelAccount: { credentialsEncrypted: string | null };
+        } | null;
+      };
+    },
+    ref: MediaRef,
+  ): Promise<{ data: Buffer; contentType: string }> {
+    if (!ref.messageId) throw new Error('evolution mediaRef missing messageId');
+    const creds = parseWaSessionCredentials(
+      message.conversation.channelEndpoint?.channelAccount.credentialsEncrypted,
+    );
+    if (!creds) throw new Error('evolution mediaRef without session credentials');
+    const { data, mimetype } = await this.evolution.mediaBase64(creds, ref.messageId);
+    return {
+      data,
+      contentType:
+        ref.mimeType?.split(';')[0]?.trim() || mimetype?.split(';')[0]?.trim() || 'application/octet-stream',
     };
   }
 

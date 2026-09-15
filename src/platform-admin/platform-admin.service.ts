@@ -17,6 +17,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { planToMaxUsers } from '../billing/plan-limits';
+import { inviteAcceptUrl } from '../invitations/invite-url';
 import {
   CreatePlatformInvitationDto,
   CreateTenantDto,
@@ -224,6 +225,7 @@ export class PlatformAdminService {
       email,
       invitationId: invite.id,
       inviteToken: token,
+      inviteUrl: inviteAcceptUrl(token),
     };
   }
 
@@ -461,7 +463,7 @@ export class PlatformAdminService {
           metadata: { email: normalizedEmail, role: invite.role },
         },
       });
-      return { ...invite, token };
+      return { ...invite, token, inviteUrl: inviteAcceptUrl(token) };
     });
   }
 

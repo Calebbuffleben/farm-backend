@@ -36,6 +36,11 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
     await this.client?.quit().catch(() => undefined);
   }
 
+  /** Mesma conexão para filas leves (wa-session outbound). undefined sem REDIS_URL. */
+  get redis(): RedisClientType | undefined {
+    return this.client;
+  }
+
   /** XADD farm:messages:ready — nunca lança (ingestão não pode falhar por Redis). */
   async publishMessageReady(fields: {
     messageId: string;

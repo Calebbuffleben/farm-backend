@@ -55,6 +55,29 @@ export class AssignWabaNumberDto {
   assignedUserId?: string | null;
 }
 
+export class ImportWhatsappExportDto {
+  /** preview: só lista remetentes; import: grava. */
+  @IsOptional()
+  @IsIn(['preview', 'import'])
+  mode?: 'preview' | 'import';
+
+  /** Remetente do export que é o RTV (escolhido no preview). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  rtvName?: string;
+
+  /** E.164 do produtor — o export não traz o número de forma confiável. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  peerPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  endpointId?: string;
+}
+
 export class SendTextDto {
   @IsString()
   @IsNotEmpty()

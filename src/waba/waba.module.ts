@@ -5,6 +5,7 @@ import { OpsModule } from '../ops/ops.module';
 import { ChannelModule } from '../channel/channel.module';
 import { VoiceModule } from '../voice/voice.module';
 import { EmailModule } from '../email/email.module';
+import { WaSessionModule } from '../wa-session/wa-session.module';
 import { StorageModule } from './storage.module';
 import { BspClient } from './bsp.client';
 import { WabaCloudFactory } from './waba-cloud';
@@ -28,6 +29,7 @@ import { InboxController } from './inbox.controller';
     StorageModule,
     VoiceModule,
     EmailModule,
+    WaSessionModule,
   ],
   controllers: [WabaWebhookController, WabaSettingsController, InboxController],
   providers: [
