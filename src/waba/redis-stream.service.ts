@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { createClient, type RedisClientType } from 'redis';
+import { redisUrlFromEnv } from '../redis-url';
 
 export const MESSAGES_READY_STREAM = 'farm:messages:ready';
 
@@ -18,7 +19,7 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
   private client: RedisClientType | undefined;
 
   async onModuleInit() {
-    const url = process.env.REDIS_URL?.trim();
+    const url = redisUrlFromEnv();
     if (!url) {
       this.logger.warn(
         'REDIS_URL not set — farm:messages:ready publishing disabled',

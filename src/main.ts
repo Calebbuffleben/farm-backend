@@ -4,6 +4,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { RedisIoAdapter } from './redis-io.adapter';
+import { redisUrlFromEnv } from './redis-url';
 import * as dotenv from 'dotenv';
 import { resolve } from 'path';
 
@@ -54,7 +55,7 @@ async function bootstrap() {
     }),
   );
 
-  const redisUrl = process.env.REDIS_URL?.trim();
+  const redisUrl = redisUrlFromEnv();
   if (redisUrl) {
     const redisIoAdapter = new RedisIoAdapter(app);
     await redisIoAdapter.connectToRedis();
