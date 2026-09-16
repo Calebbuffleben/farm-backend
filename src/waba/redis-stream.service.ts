@@ -5,7 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { createClient, type RedisClientType } from 'redis';
-import { redisUrlFromEnv } from '../redis-url';
+import { redisHostLabel, redisUrlFromEnv } from '../redis-url';
 
 export const MESSAGES_READY_STREAM = 'farm:messages:ready';
 
@@ -31,6 +31,8 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`redis error: ${err.message}`),
     );
     await this.client.connect();
+    this.logger.log(`redis connected host=${redisHostLabel(url)}`);
+    await this.logStreamHealth('boot');
   }
 
   async onModuleDestroy() {
@@ -81,12 +83,53 @@ export class RedisStreamService implements OnModuleInit, OnModuleDestroy {
         type: String(fields.type),
       });
       this.logger.log(`published ${MESSAGES_READY_STREAM} message=${fields.messageId}`);
+      await this.logStreamHealth('publish');
       return true;
     } catch (err) {
       this.logger.error(
         `publishMessageReady failed for ${fields.messageId}: ${(err as Error).message}`,
       );
       return false;
+    }
+  }
+
+  /**
+   * xlen + grupos. Sem grupo `intelligence` neste Redis, o worker está
+   * ligado em outra instância (ou ainda não subiu).
+   */
+  private async logStreamHealth(when: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const length = await this.client.xLen(MESSAGES_READY_STREAM);
+      let groups = 'none';
+      try {
+        const info = (await this.client.xInfoGroups(MESSAGES_READY_STREAM)) as Array<{
+          name?: string;
+          pending?: number;
+          consumers?: number;
+        }>;
+        groups =
+          info.length === 0
+            ? 'none'
+            : info
+                .map(
+                  (g) =>
+                    `${g.name}:pending=${g.pending ?? 0}:consumers=${g.consumers ?? 0}`,
+                )
+                .join(',');
+      } catch {
+        groups = 'none';
+      }
+      const line = `${MESSAGES_READY_STREAM} ${when} xlen=${length} groups=${groups}`;
+      if (groups === 'none') {
+        this.logger.warn(
+          `${line} — worker intelligence não está neste Redis (XGROUP ainda não existe)`,
+        );
+      } else {
+        this.logger.log(line);
+      }
+    } catch (err) {
+      this.logger.warn(`stream health failed: ${(err as Error).message}`);
     }
   }
 }
