@@ -242,7 +242,7 @@ export class InboxService {
     sessionId: string | null;
     type: string;
   }): Promise<void> {
-    const claimed = await this.stream.claimOnce(message.id, 120);
+    const claimed = await this.stream.claimOnce(message.id, 30);
     if (!claimed) return;
     await this.stream.publishMessageReady({
       messageId: message.id,
