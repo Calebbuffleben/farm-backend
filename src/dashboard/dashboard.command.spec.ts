@@ -25,12 +25,20 @@ function row(overrides: Partial<DealRow> = {}): DealRow {
     stage: 'NEGOCIACAO',
     stageConfidence: 0.8,
     contextSummary: 'Quer fechar defensivo antes do plantio.',
+    producerPosition: 'Quer comprar se o prazo atender.',
+    dealChange: null,
     intent: 'MEDIA',
     urgency: 'MEDIA',
     painPoint: null,
     nextAction: 'Confirmar prazo.',
+    nextActionReason: 'O prazo é a barreira para avançar.',
+    nextActionOwner: 'RTV',
     nextActionKind: 'followup',
+    nextActionDueHint: null,
     nextActionDueAt: null,
+    suggestedReply: null,
+    managerGuidance: null,
+    analysisQuality: 'COMPLETE',
     blockerSubtype: null,
     products: [],
     updatedAt: daysAgo(1),
@@ -39,6 +47,7 @@ function row(overrides: Partial<DealRow> = {}): DealRow {
     openComplaints: 0,
     overdueFollowups: 0,
     moneyHints: [],
+    criticalFacts: [],
     crops: ['soja'],
     regions: ['Norte'],
     productKeys: [],
@@ -63,8 +72,17 @@ describe('buildRadar', () => {
     ];
     const radar = buildRadar(rows, NOW);
     expect(radar[0].rtvName).toBe('Bruno');
-    expect(radar[0]).toMatchObject({ cooling: 2, unanswered: 1, complaints: 2 });
-    expect(radar[1]).toMatchObject({ rtvName: 'Ana', hot: 1, warm: 1, score: 0 });
+    expect(radar[0]).toMatchObject({
+      cooling: 2,
+      unanswered: 1,
+      complaints: 2,
+    });
+    expect(radar[1]).toMatchObject({
+      rtvName: 'Ana',
+      hot: 1,
+      warm: 1,
+      score: 0,
+    });
   });
 });
 
@@ -72,8 +90,16 @@ describe('buildPipeline', () => {
   it('agrupa por estágio e por gargalo com pistas de valor em texto', () => {
     const rows = [
       row({ stage: 'SONDAGEM' }),
-      row({ stage: 'NEGOCIACAO', blockerSubtype: 'preco', moneyHints: ['5% desconto'] }),
-      row({ stage: 'NEGOCIACAO', blockerSubtype: 'preco', moneyHints: ['50 galões'] }),
+      row({
+        stage: 'NEGOCIACAO',
+        blockerSubtype: 'preco',
+        moneyHints: ['5% desconto'],
+      }),
+      row({
+        stage: 'NEGOCIACAO',
+        blockerSubtype: 'preco',
+        moneyHints: ['50 galões'],
+      }),
       row({ stage: 'FECHAMENTO', blockerSubtype: 'logistica' }),
       row({ stage: 'SEM_NEGOCIO', blockerSubtype: 'preco' }),
     ];
@@ -81,8 +107,13 @@ describe('buildPipeline', () => {
     expect(pipeline.open).toBe(4);
     const negociacao = pipeline.byStage.find((s) => s.stage === 'NEGOCIACAO');
     expect(negociacao?.count).toBe(2);
-    expect(pipeline.byBlocker[0]).toMatchObject({ blockerSubtype: 'preco', count: 2 });
-    expect(pipeline.byBlocker[0].moneyHints.sort()).toEqual(['50 galões', '5% desconto'].sort());
+    expect(pipeline.byBlocker[0]).toMatchObject({
+      blockerSubtype: 'preco',
+      count: 2,
+    });
+    expect(pipeline.byBlocker[0].moneyHints.sort()).toEqual(
+      ['50 galões', '5% desconto'].sort(),
+    );
     // SEM_NEGOCIO não entra no gargalo
     expect(pipeline.byBlocker.reduce((a, b) => a + b.count, 0)).toBe(3);
   });
@@ -93,13 +124,20 @@ describe('buildAttention', () => {
     const quiet = row();
     const hotPain = row({ intent: 'ALTA', painPoint: 'Concorrente parcelou.' });
     const overdue = row({ nextActionDueAt: daysAgo(2) });
-    const coolingClose = row({ stage: 'FECHAMENTO', lastMessageAt: daysAgo(9) });
+    const coolingClose = row({
+      stage: 'FECHAMENTO',
+      lastMessageAt: daysAgo(9),
+    });
     const unanswered = row({
       stage: 'SONDAGEM',
       lastMessageAt: hoursAgo(72),
       lastDirection: 'IN',
     });
-    const noDeal = row({ stage: 'SEM_NEGOCIO', painPoint: 'x', intent: 'ALTA' });
+    const noDeal = row({
+      stage: 'SEM_NEGOCIO',
+      painPoint: 'x',
+      intent: 'ALTA',
+    });
 
     const attention = buildAttention(
       [quiet, hotPain, overdue, coolingClose, unanswered, noDeal],
@@ -110,12 +148,14 @@ describe('buildAttention', () => {
     expect(ids).not.toContain(noDeal.conversationId);
     expect(ids[0]).toBe(hotPain.conversationId);
     expect(attention[0].reasons).toEqual(['hot_with_pain']);
-    expect(attention.find((a) => a.conversationId === coolingClose.conversationId)?.reasons).toEqual([
-      'cooling_late_stage',
-    ]);
-    expect(attention.find((a) => a.conversationId === unanswered.conversationId)?.reasons).toEqual([
-      'unanswered',
-    ]);
+    expect(
+      attention.find((a) => a.conversationId === coolingClose.conversationId)
+        ?.reasons,
+    ).toEqual(['cooling_late_stage']);
+    expect(
+      attention.find((a) => a.conversationId === unanswered.conversationId)
+        ?.reasons,
+    ).toEqual(['unanswered']);
   });
 
   it('sem resposta em negociação acumula motivos e sobe na lista', () => {
@@ -123,6 +163,19 @@ describe('buildAttention', () => {
     const [top] = buildAttention([stuck], NOW);
     expect(top.reasons.sort()).toEqual(['cooling_late_stage', 'unanswered']);
     expect(top.priority).toBe(7);
+  });
+
+  it('leva escalada e risco crítico para a atenção do gerente', () => {
+    const escalation = row({
+      nextActionOwner: 'MANAGER',
+      nextActionKind: 'escalar_gestor',
+      managerGuidance: 'Aprovar ou recusar a condição solicitada.',
+      criticalFacts: ['Concorrente pode fechar hoje.'],
+    });
+    const [item] = buildAttention([escalation], NOW);
+    expect(item.reasons).toContain('manager_escalation');
+    expect(item.managerGuidance).toContain('condição');
+    expect(item.criticalFacts).toEqual(['Concorrente pode fechar hoje.']);
   });
 });
 
@@ -133,7 +186,9 @@ describe('applyDealCuts / buildCommand', () => {
       row({ rtvUserId: 'rtv-b', crops: ['milho'], lastMessageAt: daysAgo(10) }),
     ];
     expect(applyDealCuts(rows, { crop: 'milho' })).toHaveLength(1);
-    expect(applyDealCuts(rows, { rtvUserId: 'rtv-a' })[0].rtvUserId).toBe('rtv-a');
+    expect(applyDealCuts(rows, { rtvUserId: 'rtv-a' })[0].rtvUserId).toBe(
+      'rtv-a',
+    );
     const command = buildCommand(rows, NOW);
     expect(command.summary).toMatchObject({ deals: 2, hot: 1, cooling: 1 });
     expect(command.radar).toHaveLength(2);

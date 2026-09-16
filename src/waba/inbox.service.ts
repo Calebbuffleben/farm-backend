@@ -32,12 +32,20 @@ const BRIEF_SELECT = {
   stage: true,
   stageConfidence: true,
   contextSummary: true,
+  producerPosition: true,
+  dealChange: true,
   intent: true,
   urgency: true,
   painPoint: true,
   nextAction: true,
+  nextActionReason: true,
+  nextActionOwner: true,
   nextActionKind: true,
+  nextActionDueHint: true,
   nextActionDueAt: true,
+  suggestedReply: true,
+  managerGuidance: true,
+  analysisQuality: true,
   blockerSubtype: true,
   products: true,
   evidenceMessageId: true,
@@ -48,12 +56,20 @@ type BriefRow = {
   stage: string;
   stageConfidence: number;
   contextSummary: string;
+  producerPosition: string | null;
+  dealChange: string | null;
   intent: string;
   urgency: string;
   painPoint: string | null;
   nextAction: string;
+  nextActionReason: string | null;
+  nextActionOwner: string;
   nextActionKind: string;
+  nextActionDueHint: string | null;
   nextActionDueAt: Date | null;
+  suggestedReply: string | null;
+  managerGuidance: string | null;
+  analysisQuality: string;
   blockerSubtype: string | null;
   products: unknown;
   evidenceMessageId: string;
@@ -80,12 +96,20 @@ function toBriefView(
       now,
     ),
     contextSummary: brief.contextSummary,
+    producerPosition: brief.producerPosition,
+    dealChange: brief.dealChange,
     intent: brief.intent as DealLevel,
     urgency: brief.urgency as DealLevel,
     painPoint: brief.painPoint,
     nextAction: brief.nextAction,
+    nextActionReason: brief.nextActionReason,
+    nextActionOwner: brief.nextActionOwner,
     nextActionKind: brief.nextActionKind,
+    nextActionDueHint: brief.nextActionDueHint,
     nextActionDueAt: brief.nextActionDueAt,
+    suggestedReply: brief.suggestedReply,
+    managerGuidance: brief.managerGuidance,
+    analysisQuality: brief.analysisQuality,
     blockerSubtype: brief.blockerSubtype,
     products: Array.isArray(brief.products) ? (brief.products as string[]) : [],
     evidenceMessageId: brief.evidenceMessageId,
@@ -199,7 +223,11 @@ export class InboxService {
     // Envelope: Nest devolve corpo vazio para `null` e o fetch do web quebra no .json()
     if (conversation.brief) {
       return {
-        brief: toBriefView(conversation.brief, conversation.messages[0], new Date()),
+        brief: toBriefView(
+          conversation.brief,
+          conversation.messages[0],
+          new Date(),
+        ),
         analysis: 'ready' as const,
       };
     }
@@ -226,7 +254,9 @@ export class InboxService {
     if (!inbound) {
       return { brief: null, analysis: 'waiting_producer' as const };
     }
-    if (!(await this.consent.canAnalyze(user.tenantId, conversation.producerId))) {
+    if (
+      !(await this.consent.canAnalyze(user.tenantId, conversation.producerId))
+    ) {
       return { brief: null, analysis: 'blocked' as const };
     }
     // Mensagem do produtor já chegou, mas o DealBrief não — a fila original

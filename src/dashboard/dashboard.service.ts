@@ -65,7 +65,11 @@ export class DashboardService {
     const deals = await this.loadDeals(tenantId, all, now);
     const command = buildCommand(applyDealCuts(deals, cuts), now);
 
-    return { ...home, ...command, cuts: this.mergeCuts(collectCuts(all), deals) };
+    return {
+      ...home,
+      ...command,
+      cuts: this.mergeCuts(collectCuts(all), deals),
+    };
   }
 
   /** Drawer do negócio: brief + temperatura + fatos abertos com evidência. */
@@ -109,6 +113,7 @@ export class DashboardService {
         kind: true,
         subtype: true,
         severity: true,
+        confidence: true,
         headline: true,
         moneyHint: true,
         dueHintText: true,
@@ -142,22 +147,43 @@ export class DashboardService {
         stage: brief.stage as DealStage,
         stageConfidence: brief.stageConfidence,
         contextSummary: brief.contextSummary,
+        producerPosition: brief.producerPosition,
+        dealChange: brief.dealChange,
         intent: brief.intent as DealLevel,
         urgency: brief.urgency as DealLevel,
         painPoint: brief.painPoint,
         nextAction: brief.nextAction,
+        nextActionReason: brief.nextActionReason,
+        nextActionOwner: brief.nextActionOwner,
         nextActionKind: brief.nextActionKind,
+        nextActionDueHint: brief.nextActionDueHint,
         nextActionDueAt: brief.nextActionDueAt,
+        suggestedReply: brief.suggestedReply,
+        managerGuidance: brief.managerGuidance,
+        analysisQuality: brief.analysisQuality,
         blockerSubtype: brief.blockerSubtype,
-        products: Array.isArray(brief.products) ? (brief.products as string[]) : [],
+        products: Array.isArray(brief.products)
+          ? (brief.products as string[])
+          : [],
         updatedAt: brief.updatedAt,
         lastMessageAt: last?.sentAt ?? null,
         lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
-        openComplaints: facts.filter((f) => f.kind === 'OBJECAO' || f.kind === 'RISCO').length,
-        overdueFollowups: facts.filter((f) =>
-          f.kind === 'FOLLOWUP' && f.dueAt !== null && f.dueAt.getTime() <= now.getTime(),
+        openComplaints: facts.filter(
+          (f) => f.kind === 'OBJECAO' || f.kind === 'RISCO',
         ).length,
-        moneyHints: facts.map((f) => f.moneyHint).filter((m): m is string => Boolean(m)),
+        overdueFollowups: facts.filter(
+          (f) =>
+            f.kind === 'FOLLOWUP' &&
+            f.dueAt !== null &&
+            f.dueAt.getTime() <= now.getTime(),
+        ).length,
+        moneyHints: facts
+          .map((f) => f.moneyHint)
+          .filter((m): m is string => Boolean(m)),
+        criticalFacts: facts
+          .filter((f) => f.severity === 'CRITICAL')
+          .map((f) => f.headline)
+          .slice(0, 3),
         crops: [],
         regions: [],
         productKeys: [],
@@ -183,6 +209,7 @@ export class DashboardService {
         kind: f.kind,
         subtype: f.subtype,
         severity: f.severity,
+        confidence: f.confidence,
         headline: f.headline,
         moneyHint: f.moneyHint,
         dueHintText: f.dueHintText,
@@ -240,7 +267,11 @@ export class DashboardService {
     }
 
     const rtvIds = [
-      ...new Set(briefs.map((b) => b.rtvUserId).filter((id): id is string => Boolean(id))),
+      ...new Set(
+        briefs
+          .map((b) => b.rtvUserId)
+          .filter((id): id is string => Boolean(id)),
+      ),
     ];
     const users = rtvIds.length
       ? await this.prisma.user.findMany({
@@ -248,43 +279,68 @@ export class DashboardService {
           select: { id: true, name: true, email: true },
         })
       : [];
-    const names = new Map(users.map((u) => [u.id, u.name?.trim() || u.email] as const));
+    const names = new Map(
+      users.map((u) => [u.id, u.name?.trim() || u.email] as const),
+    );
 
     return briefs.map((b) => {
       const convFacts = factsByConversation.get(b.conversationId) ?? [];
       const farms = b.conversation.producer?.farms ?? [];
       const last = b.conversation.messages[0];
-      const uniq = (values: Array<string | null>) =>
-        [...new Set(values.filter((v): v is string => Boolean(v)))];
+      const uniq = (values: Array<string | null>) => [
+        ...new Set(values.filter((v): v is string => Boolean(v))),
+      ];
       return {
         conversationId: b.conversationId,
         producerId: b.producerId,
         producerName: b.conversation.producer?.name ?? null,
-        producerPhone: b.conversation.producerPhone ?? b.conversation.peerAddress,
+        producerPhone:
+          b.conversation.producerPhone ?? b.conversation.peerAddress,
         farmNames: farms.map((f) => f.name),
         rtvUserId: b.rtvUserId,
         rtvName: b.rtvUserId ? (names.get(b.rtvUserId) ?? null) : null,
         stage: b.stage as DealStage,
         stageConfidence: b.stageConfidence,
         contextSummary: b.contextSummary,
+        producerPosition: b.producerPosition,
+        dealChange: b.dealChange,
         intent: b.intent as DealLevel,
         urgency: b.urgency as DealLevel,
         painPoint: b.painPoint,
         nextAction: b.nextAction,
+        nextActionReason: b.nextActionReason,
+        nextActionOwner: b.nextActionOwner,
         nextActionKind: b.nextActionKind,
+        nextActionDueHint: b.nextActionDueHint,
         nextActionDueAt: b.nextActionDueAt,
+        suggestedReply: b.suggestedReply,
+        managerGuidance: b.managerGuidance,
+        analysisQuality: b.analysisQuality,
         blockerSubtype: b.blockerSubtype,
         products: Array.isArray(b.products) ? (b.products as string[]) : [],
         updatedAt: b.updatedAt,
         lastMessageAt: last?.sentAt ?? null,
         lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
-        openComplaints: convFacts.filter((f) => f.kind === 'OBJECAO' || f.kind === 'RISCO').length,
-        overdueFollowups: convFacts.filter((f) => isOverdueFollowup(f, now)).length,
+        openComplaints: convFacts.filter(
+          (f) => f.kind === 'OBJECAO' || f.kind === 'RISCO',
+        ).length,
+        overdueFollowups: convFacts.filter((f) => isOverdueFollowup(f, now))
+          .length,
         moneyHints: uniq(convFacts.map((f) => f.moneyHint)),
+        criticalFacts: convFacts
+          .filter((f) => f.severity === 'CRITICAL')
+          .map((f) => f.headline)
+          .slice(0, 3),
         crops: uniq(convFacts.map((f) => f.crop)),
-        regions: uniq([...convFacts.map((f) => f.region), ...farms.map((f) => f.region)]),
+        regions: uniq([
+          ...convFacts.map((f) => f.region),
+          ...farms.map((f) => f.region),
+        ]),
         productKeys: uniq(convFacts.map((f) => f.productKey)),
-        farmIds: uniq([...convFacts.map((f) => f.farmId), ...farms.map((f) => f.id)]),
+        farmIds: uniq([
+          ...convFacts.map((f) => f.farmId),
+          ...farms.map((f) => f.id),
+        ]),
       };
     });
   }
@@ -293,9 +349,13 @@ export class DashboardService {
   private mergeCuts(cuts: ReturnType<typeof collectCuts>, deals: DealRow[]) {
     const rtvs = new Map(cuts.rtvs.map((r) => [r.id, r.name] as const));
     for (const d of deals) {
-      if (d.rtvUserId && !rtvs.has(d.rtvUserId)) rtvs.set(d.rtvUserId, d.rtvName ?? d.rtvUserId);
+      if (d.rtvUserId && !rtvs.has(d.rtvUserId))
+        rtvs.set(d.rtvUserId, d.rtvName ?? d.rtvUserId);
     }
-    return { ...cuts, rtvs: [...rtvs.entries()].map(([id, name]) => ({ id, name })) };
+    return {
+      ...cuts,
+      rtvs: [...rtvs.entries()].map(([id, name]) => ({ id, name })),
+    };
   }
 
   async getFact(tenantId: string, userId: string, factId: string) {
@@ -483,10 +543,7 @@ export class DashboardService {
       where: {
         tenantId,
         status: 'OPEN',
-        OR: [
-          { occurredAt: { gte: since } },
-          { kind: 'FOLLOWUP' },
-        ],
+        OR: [{ occurredAt: { gte: since } }, { kind: 'FOLLOWUP' }],
       },
       orderBy: { occurredAt: 'desc' },
       take: OPEN_FACT_CAP,
@@ -523,7 +580,9 @@ export class DashboardService {
 
   private async withRtvNames(rows: FactRow[]): Promise<FactRow[]> {
     const ids = [
-      ...new Set(rows.map((r) => r.rtvUserId).filter((id): id is string => Boolean(id))),
+      ...new Set(
+        rows.map((r) => r.rtvUserId).filter((id): id is string => Boolean(id)),
+      ),
     ];
     if (!ids.length) return rows;
     const users = await this.prisma.user.findMany({

@@ -33,12 +33,20 @@ export interface DealRow {
   stage: DealStage;
   stageConfidence: number;
   contextSummary: string;
+  producerPosition: string | null;
+  dealChange: string | null;
   intent: DealLevel;
   urgency: DealLevel;
   painPoint: string | null;
   nextAction: string;
+  nextActionReason: string | null;
+  nextActionOwner: 'RTV' | 'MANAGER';
   nextActionKind: string;
+  nextActionDueHint: string | null;
   nextActionDueAt: Date | null;
+  suggestedReply: string | null;
+  managerGuidance: string | null;
+  analysisQuality: 'COMPLETE' | 'PARTIAL' | 'STALE';
   blockerSubtype: string | null;
   products: string[];
   updatedAt: Date;
@@ -48,6 +56,7 @@ export interface DealRow {
   openComplaints: number;
   overdueFollowups: number;
   moneyHints: string[];
+  criticalFacts: string[];
   /** Cortes do dashboard (mesmos filtros das 5 perguntas). */
   crops: string[];
   regions: string[];
@@ -75,13 +84,22 @@ export interface DealCard {
   intent: DealLevel;
   urgency: DealLevel;
   contextSummary: string;
+  producerPosition: string | null;
+  dealChange: string | null;
   painPoint: string | null;
   nextAction: string;
+  nextActionReason: string | null;
+  nextActionOwner: 'RTV' | 'MANAGER';
   nextActionKind: string;
+  nextActionDueHint: string | null;
   nextActionDueAt: string | null;
+  suggestedReply: string | null;
+  managerGuidance: string | null;
+  analysisQuality: 'COMPLETE' | 'PARTIAL' | 'STALE';
   blockerSubtype: string | null;
   products: string[];
   moneyHints: string[];
+  criticalFacts: string[];
   lastMessageAt: string | null;
   lastDirection: 'IN' | 'OUT' | null;
   unanswered: boolean;
@@ -93,7 +111,8 @@ export type AttentionReason =
   | 'cooling_late_stage'
   | 'unanswered'
   | 'next_action_overdue'
-  | 'followup_overdue';
+  | 'followup_overdue'
+  | 'manager_escalation';
 
 export interface AttentionItem extends DealCard {
   reasons: AttentionReason[];
@@ -121,7 +140,8 @@ export function applyDealCuts(rows: DealRow[], cuts: DealCuts): DealRow[] {
     if (cuts.farmId && !row.farmIds.includes(cuts.farmId)) return false;
     if (cuts.crop && !row.crops.includes(cuts.crop)) return false;
     if (cuts.region && !row.regions.includes(cuts.region)) return false;
-    if (cuts.productKey && !row.productKeys.includes(cuts.productKey)) return false;
+    if (cuts.productKey && !row.productKeys.includes(cuts.productKey))
+      return false;
     return true;
   });
 }
@@ -141,13 +161,22 @@ export function toDealCard(row: DealRow, now: Date): DealCard {
     intent: row.intent,
     urgency: row.urgency,
     contextSummary: row.contextSummary,
+    producerPosition: row.producerPosition,
+    dealChange: row.dealChange,
     painPoint: row.painPoint,
     nextAction: row.nextAction,
+    nextActionReason: row.nextActionReason,
+    nextActionOwner: row.nextActionOwner,
     nextActionKind: row.nextActionKind,
+    nextActionDueHint: row.nextActionDueHint,
     nextActionDueAt: row.nextActionDueAt?.toISOString() ?? null,
+    suggestedReply: row.suggestedReply,
+    managerGuidance: row.managerGuidance,
+    analysisQuality: row.analysisQuality,
     blockerSubtype: row.blockerSubtype,
     products: row.products,
     moneyHints: row.moneyHints,
+    criticalFacts: row.criticalFacts,
     lastMessageAt: row.lastMessageAt?.toISOString() ?? null,
     lastDirection: row.lastDirection,
     unanswered,
@@ -198,9 +227,18 @@ export function buildRadar(rows: DealRow[], now: Date): RadarRow[] {
     .map((b) => ({
       ...b,
       // esfriando e sem resposta pesam mais que reclamação: é venda escapando
-      score: b.cooling * 3 + b.unanswered * 3 + b.overdueFollowups * 2 + b.complaints,
+      score:
+        b.cooling * 3 +
+        b.unanswered * 3 +
+        b.overdueFollowups * 2 +
+        b.complaints,
     }))
-    .sort((a, b) => b.score - a.score || b.hot - a.hot || a.rtvName.localeCompare(b.rtvName, 'pt-BR'));
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.hot - a.hot ||
+        a.rtvName.localeCompare(b.rtvName, 'pt-BR'),
+    );
 }
 
 export function buildPipeline(rows: DealRow[], now: Date) {
@@ -223,7 +261,10 @@ export function buildPipeline(rows: DealRow[], now: Date) {
       deals: deals.sort(sortCards),
       moneyHints: [...new Set(deals.flatMap((d) => d.moneyHints))].slice(0, 12),
     }))
-    .sort((a, b) => b.count - a.count || a.blockerSubtype.localeCompare(b.blockerSubtype));
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.blockerSubtype.localeCompare(b.blockerSubtype),
+    );
   return {
     open: cards.filter((c) => c.stage !== 'SEM_NEGOCIO').length,
     byStage,
@@ -237,15 +278,21 @@ const REASON_WEIGHT: Record<AttentionReason, number> = {
   cooling_late_stage: 4,
   unanswered: 3,
   followup_overdue: 2,
+  manager_escalation: 5,
 };
 
-export function buildAttention(rows: DealRow[], now: Date, limit = 30): AttentionItem[] {
+export function buildAttention(
+  rows: DealRow[],
+  now: Date,
+  limit = 30,
+): AttentionItem[] {
   const items: AttentionItem[] = [];
   for (const row of rows) {
     if (row.stage === 'SEM_NEGOCIO') continue;
     const card = toDealCard(row, now);
     const reasons: AttentionReason[] = [];
-    if (card.temperature === 'HOT' && card.painPoint) reasons.push('hot_with_pain');
+    if (card.temperature === 'HOT' && card.painPoint)
+      reasons.push('hot_with_pain');
     if (
       card.temperature === 'COOLING' &&
       (card.stage === 'NEGOCIACAO' || card.stage === 'FECHAMENTO')
@@ -257,6 +304,12 @@ export function buildAttention(rows: DealRow[], now: Date, limit = 30): Attentio
       reasons.push('next_action_overdue');
     }
     if (row.overdueFollowups > 0) reasons.push('followup_overdue');
+    if (
+      row.nextActionOwner === 'MANAGER' ||
+      row.nextActionKind === 'escalar_gestor'
+    ) {
+      reasons.push('manager_escalation');
+    }
     if (!reasons.length) continue;
     const priority = reasons.reduce((acc, r) => acc + REASON_WEIGHT[r], 0);
     items.push({ ...card, reasons, priority });

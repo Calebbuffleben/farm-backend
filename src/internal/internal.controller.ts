@@ -141,12 +141,22 @@ export class InternalController {
         where: { conversationId: message.conversationId },
         select: {
           stage: true,
+          stageConfidence: true,
           contextSummary: true,
+          producerPosition: true,
+          dealChange: true,
           intent: true,
           urgency: true,
           painPoint: true,
           nextAction: true,
+          nextActionReason: true,
+          nextActionOwner: true,
           nextActionKind: true,
+          nextActionDueHint: true,
+          nextActionDueAt: true,
+          suggestedReply: true,
+          managerGuidance: true,
+          analysisQuality: true,
           blockerSubtype: true,
           products: true,
           updatedAt: true,
@@ -202,10 +212,7 @@ export class InternalController {
 
   /** Mídia para STT — o worker não precisa de credenciais do object storage. */
   @Get('media/:assetId')
-  async streamMedia(
-    @Param('assetId') assetId: string,
-    @Res() res: Response,
-  ) {
+  async streamMedia(@Param('assetId') assetId: string, @Res() res: Response) {
     const asset = await this.prisma.mediaAsset.findUnique({
       where: { id: assetId },
     });

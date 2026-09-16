@@ -747,6 +747,17 @@ enum DealLevel {
   ALTA
 }
 
+enum NextActionOwner {
+  RTV
+  MANAGER
+}
+
+enum AnalysisQuality {
+  COMPLETE
+  PARTIAL
+  STALE
+}
+
 model DealBrief {
   id              String       @id @default(uuid())
   tenantId        String
@@ -760,15 +771,27 @@ model DealBrief {
   stageConfidence Float        @default(0)
   /// Contexto central: o que motivou a conversa
   contextSummary  String
+  /// Posição declarada/inferida com evidência do produtor
+  producerPosition String?
+  /// Mudança desta rodada em relação ao brief anterior
+  dealChange       String?
   intent          DealLevel    @default(MEDIA)
   urgency         DealLevel    @default(MEDIA)
   /// Dor / objeção oculta — o que impede a venda agora
   painPoint       String?
   /// Next Best Action (texto acionável para o RTV)
   nextAction      String
+  nextActionReason String?
+  nextActionOwner NextActionOwner @default(RTV)
   /// proposta | followup | logistica | ligar | escalar_gestor | aguardar | pos_venda
   nextActionKind  String       @default("aguardar")
+  nextActionDueHint String?
   nextActionDueAt DateTime?
+  /// Resposta sugerida é editável e nunca enviada automaticamente
+  suggestedReply  String?
+  /// Decisão/ajuda necessária do gerente
+  managerGuidance String?
+  analysisQuality AnalysisQuality @default(COMPLETE)
   /// Gargalo — mesmo vocabulário de CommercialFact.subtype (preco, logistica…)
   blockerSubtype  String?
   /// Produtos/insumos em jogo: string[]

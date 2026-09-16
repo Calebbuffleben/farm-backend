@@ -145,6 +145,16 @@ export class AnalysisDealDto {
   @MaxLength(600)
   contextSummary!: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(600)
+  producerPosition?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  dealChange?: string | null;
+
   @IsIn(DEAL_LEVELS)
   intent!: (typeof DEAL_LEVELS)[number];
 
@@ -161,6 +171,15 @@ export class AnalysisDealDto {
   @MaxLength(400)
   nextAction!: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(400)
+  nextActionReason?: string | null;
+
+  @IsOptional()
+  @IsIn(['RTV', 'MANAGER'])
+  nextActionOwner?: 'RTV' | 'MANAGER';
+
   @IsIn(NEXT_ACTION_KINDS)
   nextActionKind!: (typeof NEXT_ACTION_KINDS)[number];
 
@@ -172,6 +191,20 @@ export class AnalysisDealDto {
   @IsOptional()
   @IsISO8601()
   nextActionDueAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  suggestedReply?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(600)
+  managerGuidance?: string | null;
+
+  @IsOptional()
+  @IsIn(['COMPLETE', 'PARTIAL', 'STALE'])
+  analysisQuality?: 'COMPLETE' | 'PARTIAL' | 'STALE';
 
   @IsOptional()
   @IsString()
