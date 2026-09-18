@@ -53,10 +53,7 @@ export class FactsIngestService {
     return row?.assignedUserId ?? null;
   }
 
-  private async applyAnalysisInner(
-    messageId: string,
-    dto: PublishAnalysisDto,
-  ) {
+  private async applyAnalysisInner(messageId: string, dto: PublishAnalysisDto) {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: {
@@ -168,6 +165,53 @@ export class FactsIngestService {
         await tx.logicalSession.update({
           where: { id: message.sessionId },
           data: { summary: dto.sessionSummary },
+        });
+      }
+
+      // Situação do negócio: 1 por conversa, sempre a visão mais recente.
+      // Sem `deal` no payload, o brief anterior fica como está (fail-open).
+      if (dto.deal) {
+        const d = dto.deal;
+        const fields = {
+          producerId,
+          rtvUserId,
+          stage: d.stage,
+          stageConfidence: d.stageConfidence ?? 0.5,
+          contextSummary: d.contextSummary,
+          producerPosition: d.producerPosition ?? null,
+          dealChange: d.dealChange ?? null,
+          intent: d.intent,
+          urgency: d.urgency,
+          painPoint: d.painPoint ?? null,
+          nextAction: d.nextAction,
+          nextActionReason: d.nextActionReason ?? null,
+          nextActionOwner: d.nextActionOwner ?? ('RTV' as const),
+          nextActionKind: d.nextActionKind,
+          nextActionDueHint: d.nextActionDueHint ?? null,
+          nextActionDueAt: d.nextActionDueAt
+            ? new Date(d.nextActionDueAt)
+            : null,
+          suggestedReply: d.suggestedReply ?? null,
+          managerGuidance: d.managerGuidance ?? null,
+          analysisQuality: d.analysisQuality ?? ('COMPLETE' as const),
+          blockerSubtype: d.blockerSubtype ?? null,
+          products: (d.products ?? []) as unknown as Prisma.JsonArray,
+        };
+        await tx.dealBrief.upsert({
+          where: { conversationId: message.conversationId },
+          create: {
+            tenantId,
+            conversationId: message.conversationId,
+            ...fields,
+            evidenceMessageId: messageId,
+          },
+          update: {
+            ...fields,
+            // STALE preserva também a evidência que sustentou o brief anterior.
+            ...(d.analysisQuality === 'STALE'
+              ? {}
+              : { evidenceMessageId: messageId }),
+          },
         });
       }
     });

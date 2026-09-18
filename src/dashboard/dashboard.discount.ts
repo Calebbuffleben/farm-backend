@@ -6,7 +6,7 @@ export function isDiscountReplyFact(kind: string, subtype: string): boolean {
 
 /** VOICE não tem sendText — o gestor liga. WABA e e-mail despacham o texto. */
 export function discountReplySendsText(
-  channelKind: 'WABA' | 'VOICE' | 'EMAIL',
+  channelKind: 'WABA' | 'VOICE' | 'EMAIL' | 'WA_SESSION',
 ): boolean {
   return channelKind !== 'VOICE';
 }

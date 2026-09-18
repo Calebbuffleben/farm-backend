@@ -4,6 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient, type RedisClientType } from 'redis';
 import type { Server } from 'socket.io';
 import type { ServerOptions } from 'socket.io';
+import { redisUrlFromEnv } from './redis-url';
 
 /**
  * Socket.IO adapter backed by Redis pub/sub for cross-replica broadcast.
@@ -19,11 +20,11 @@ export class RedisIoAdapter extends IoAdapter {
   }
 
   async connectToRedis(): Promise<void> {
-    const url = process.env.REDIS_URL;
-    if (!url?.trim()) {
+    const url = redisUrlFromEnv();
+    if (!url) {
       throw new Error('REDIS_URL is required when using RedisIoAdapter');
     }
-    this.pubClient = createClient({ url: url.trim() });
+    this.pubClient = createClient({ url });
     this.subClient = this.pubClient.duplicate();
     await Promise.all([this.pubClient.connect(), this.subClient.connect()]);
     this.adapterConstructor = createAdapter(this.pubClient, this.subClient);

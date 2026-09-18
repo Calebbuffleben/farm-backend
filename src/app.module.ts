@@ -17,6 +17,7 @@ import { InternalModule } from './internal/internal.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { OpsModule } from './ops/ops.module';
 import { ConsentModule } from './consent/consent.module';
+import { WaSessionModule } from './wa-session/wa-session.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { ConsentModule } from './consent/consent.module';
     DashboardModule,
     OpsModule,
     ConsentModule,
+    WaSessionModule,
   ],
   controllers: [AppController],
   providers: [

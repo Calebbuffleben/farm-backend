@@ -5,11 +5,13 @@ import { OpsModule } from '../ops/ops.module';
 import { ChannelModule } from '../channel/channel.module';
 import { VoiceModule } from '../voice/voice.module';
 import { EmailModule } from '../email/email.module';
+import { WaSessionModule } from '../wa-session/wa-session.module';
 import { StorageModule } from './storage.module';
 import { BspClient } from './bsp.client';
 import { WabaCloudFactory } from './waba-cloud';
 import { IngestService } from './ingest.service';
 import { MediaWorker } from './media.worker';
+import { MediaFetchService } from './media-fetch.service';
 import { InboxService } from './inbox.service';
 import { WabaWebhookController } from './webhook.controller';
 import { WabaSettingsController } from './waba-settings.controller';
@@ -28,15 +30,17 @@ import { InboxController } from './inbox.controller';
     StorageModule,
     VoiceModule,
     EmailModule,
+    WaSessionModule,
   ],
   controllers: [WabaWebhookController, WabaSettingsController, InboxController],
   providers: [
     BspClient,
     WabaCloudFactory,
     IngestService,
+    MediaFetchService,
     MediaWorker,
     InboxService,
   ],
-  exports: [StorageModule, InboxService],
+  exports: [StorageModule, InboxService, MediaFetchService],
 })
 export class WabaModule {}

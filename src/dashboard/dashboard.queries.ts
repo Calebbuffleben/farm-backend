@@ -58,6 +58,9 @@ const SEVERITY_RANK: Record<FactSeverity, number> = {
   INFO: 2,
 };
 
+/** Itens expandidos nas 5 perguntas — a contagem continua completa. */
+export const QUESTION_ITEM_CAP = 8;
+
 export function rollingWindow(now: Date, days: number): TimeWindow {
   const safeDays = Number.isFinite(days) && days > 0 ? Math.min(days, 90) : 7;
   const to = now;
@@ -173,7 +176,7 @@ export function buildHome(
         previous: prevCount,
         delta: currentCount - prevCount,
         growing: currentCount > prevCount,
-        items: items.sort(sortFacts),
+        items: items.sort(sortFacts).slice(0, QUESTION_ITEM_CAP),
       };
     })
     .sort((a, b) => b.delta - a.delta || b.current - a.current);
@@ -234,7 +237,7 @@ export function buildHome(
     .map((b) => ({
       ...b,
       score: b.critical * 4 + b.overdue * 3 + b.warning * 2 + b.competitor + b.objections,
-      items: b.items.sort(sortFacts),
+      items: b.items.sort(sortFacts).slice(0, QUESTION_ITEM_CAP),
     }))
     .sort((a, b) => b.score - a.score || a.rtvName.localeCompare(b.rtvName, 'pt-BR'));
 
@@ -249,19 +252,19 @@ export function buildHome(
     unknownPending,
     cuts: collectCuts(rows),
     questions: {
-      moneyRisk: { count: moneyItems.length, items: moneyItems },
+      moneyRisk: { count: moneyItems.length, items: moneyItems.slice(0, QUESTION_ITEM_CAP) },
       objections: {
         count: currentObj.length,
         growing: objectionGroups.filter((g) => g.growing).length,
-        groups: objectionGroups,
+        groups: objectionGroups.slice(0, QUESTION_ITEM_CAP),
       },
       followups: {
         count: followupItems.length,
         overdue: overdueCount,
-        items: followupItems,
+        items: followupItems.slice(0, QUESTION_ITEM_CAP),
       },
-      competitor: { count: competitorItems.length, items: competitorItems },
-      rtvHelp: { count: rtvHelp.length, items: rtvHelp },
+      competitor: { count: competitorItems.length, items: competitorItems.slice(0, QUESTION_ITEM_CAP) },
+      rtvHelp: { count: rtvHelp.length, items: rtvHelp.slice(0, QUESTION_ITEM_CAP) },
     },
   };
 }

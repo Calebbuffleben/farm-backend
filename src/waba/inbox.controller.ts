@@ -19,7 +19,11 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { TenantContext } from '../tenancy/tenant-context.types';
 import { InboxService } from './inbox.service';
 import { StorageService } from './storage.service';
-import { SendTextDto } from './dto/waba.dto';
+import { ImportWhatsappExportDto, SendTextDto } from './dto/waba.dto';
+import {
+  EXPORT_MAX_BYTES,
+  WhatsappExportImportService,
+} from '../channel/whatsapp-export-import.service';
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024; // limite de áudio da Cloud API
 
@@ -28,13 +32,46 @@ export class InboxController {
   constructor(
     private readonly inbox: InboxService,
     private readonly storage: StorageService,
+    private readonly exportImport: WhatsappExportImportService,
   ) {}
+
+  /** Plano B: export .txt do WhatsApp. mode=preview lista remetentes; import grava. */
+  @Post('imports/whatsapp-export')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: EXPORT_MAX_BYTES } }))
+  async importWhatsappExport(
+    @CurrentUser() user: TenantContext | undefined,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() dto: ImportWhatsappExportDto,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Envie o arquivo .txt exportado do WhatsApp (campo "file")');
+    }
+    const content = file.buffer.toString('utf8');
+    if (dto.mode !== 'import') return this.exportImport.preview(content);
+    return this.exportImport.import(user, content, {
+      rtvName: dto.rtvName ?? '',
+      peerPhone: dto.peerPhone ?? '',
+      endpointId: dto.endpointId,
+    });
+  }
 
   @Get('conversations')
   @SkipThrottle()
   async listConversations(@CurrentUser() user: TenantContext | undefined) {
     if (!user) throw new UnauthorizedException();
     return this.inbox.listConversations(user);
+  }
+
+  /** Card de Bordo do RTV: situação do negócio escrita pela IA. `{ brief: null }` = ainda sem análise. */
+  @Get('conversations/:id/brief')
+  @SkipThrottle()
+  async getBrief(
+    @CurrentUser() user: TenantContext | undefined,
+    @Param('id') conversationId: string,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    return this.inbox.getBrief(user, conversationId);
   }
 
   @Get('conversations/:id/messages')

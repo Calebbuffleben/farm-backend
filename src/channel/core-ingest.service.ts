@@ -47,6 +47,7 @@ const CONSENT_SOURCE: Record<ChannelKind, string> = {
   WABA: 'waba_first_contact',
   VOICE: 'voice_first_contact',
   EMAIL: 'email_first_contact',
+  WA_SESSION: 'waba_first_contact',
 };
 
 /**
@@ -206,7 +207,14 @@ export class CoreIngestService implements OnModuleInit, OnModuleDestroy {
         data: { lastMessageAt: n.sentAt, status: 'OPEN' },
       });
 
-      if (n.type === 'TEXT' && (await this.consent.canAnalyze(n.tenantId, producerId))) {
+      // OUT só chega aqui via WA_SESSION fromMe (RTV digitou no celular): guarda, não analisa.
+      // AUDIO entra na fila já na ingestão — o worker baixa do canal na hora
+      // do STT. Object storage é só para o player; não pode bloquear a IA.
+      if (
+        (n.type === 'TEXT' || n.type === 'AUDIO') &&
+        n.direction === 'IN' &&
+        (await this.consent.canAnalyze(n.tenantId, producerId))
+      ) {
         await this.stream.publishMessageReady({
           messageId: created.id,
           tenantId: n.tenantId,

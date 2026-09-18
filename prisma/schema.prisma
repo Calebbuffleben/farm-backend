@@ -53,6 +53,9 @@ model Tenant {
   slug      String       @unique
   name      String
   status    TenantStatus @default(ACTIVE)
+  /// Política comercial que o Next Best Action pode citar:
+  /// { discountAuthorityPct?: number, notes?: string }
+  salesPolicy Json?
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
@@ -70,6 +73,7 @@ model Tenant {
   conversations    Conversation[]
   commercialFacts  CommercialFact[]
   consentRecords   ConsentRecord[]
+  dealBriefs       DealBrief[]
 }
 
 model User {
@@ -302,6 +306,8 @@ enum ChannelKind {
   WABA
   VOICE
   EMAIL
+  /// WhatsApp do RTV via sessão (Evolution API auto-hospedada). Address = E.164 do RTV.
+  WA_SESSION
 }
 
 enum ChannelAccountStatus {
@@ -386,11 +392,14 @@ model Conversation {
   producer      Producer?          @relation(fields: [producerId], references: [id], onDelete: SetNull)
   status        ConversationStatus @default(OPEN)
   lastMessageAt DateTime?
+  /// Produtor pediu para parar de receber relatório automático (WA_SESSION).
+  reportOptOutAt DateTime?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
   sessions LogicalSession[]
   messages Message[]
+  brief    DealBrief?
 
   @@unique([channelEndpointId, peerAddress])
   @@index([tenantId, lastMessageAt])
@@ -701,6 +710,7 @@ model CommercialFact {
   @@index([tenantId, farmId, status])
   @@index([tenantId, rtvUserId, occurredAt])
   @@index([tenantId, status, dueAt])
+  @@index([tenantId, status, occurredAt])
 }
 
 /// Estado comercial aberto da fazenda — materializado a partir dos fatos OPEN.
@@ -716,6 +726,86 @@ model FarmState {
   updatedAt   DateTime @updatedAt
 
   @@index([tenantId, lastFactAt])
+}
+
+// ---------------------------------------------------------------------------
+// Situação do negócio — 1 por Conversation, escrita pelo worker na mesma
+// análise dos fatos. Estágio + resumo executivo + próximo passo. Temperatura
+// (HOT/WARM/COOLING/COLD) NÃO é coluna: regra pura em dashboard/deal-temperature.ts.
+// ---------------------------------------------------------------------------
+
+enum DealStage {
+  SONDAGEM
+  NEGOCIACAO
+  FECHAMENTO
+  POS_VENDA
+  SEM_NEGOCIO
+}
+
+enum DealLevel {
+  BAIXA
+  MEDIA
+  ALTA
+}
+
+enum NextActionOwner {
+  RTV
+  MANAGER
+}
+
+enum AnalysisQuality {
+  COMPLETE
+  PARTIAL
+  STALE
+}
+
+model DealBrief {
+  id              String       @id @default(uuid())
+  tenantId        String
+  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversationId  String       @unique
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  /// Denormalizados para o radar por RTV / pipeline por produtor
+  producerId      String?
+  rtvUserId       String?
+  stage           DealStage    @default(SEM_NEGOCIO)
+  stageConfidence Float        @default(0)
+  /// Contexto central: o que motivou a conversa
+  contextSummary  String
+  /// Posição declarada/inferida com evidência do produtor
+  producerPosition String?
+  /// Mudança desta rodada em relação ao brief anterior
+  dealChange       String?
+  intent          DealLevel    @default(MEDIA)
+  urgency         DealLevel    @default(MEDIA)
+  /// Dor / objeção oculta — o que impede a venda agora
+  painPoint       String?
+  /// Next Best Action (texto acionável para o RTV)
+  nextAction      String
+  nextActionReason String?
+  nextActionOwner NextActionOwner @default(RTV)
+  /// proposta | followup | logistica | ligar | escalar_gestor | aguardar | pos_venda
+  nextActionKind  String       @default("aguardar")
+  nextActionDueHint String?
+  nextActionDueAt DateTime?
+  /// Resposta sugerida é editável e nunca enviada automaticamente
+  suggestedReply  String?
+  /// Decisão/ajuda necessária do gerente
+  managerGuidance String?
+  analysisQuality AnalysisQuality @default(COMPLETE)
+  /// Gargalo — mesmo vocabulário de CommercialFact.subtype (preco, logistica…)
+  blockerSubtype  String?
+  /// Produtos/insumos em jogo: string[]
+  products        Json?
+  /// Última mensagem analisada que gerou este brief
+  evidenceMessageId String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([tenantId, stage])
+  @@index([tenantId, rtvUserId])
+  @@index([tenantId, producerId])
+  @@index([tenantId, updatedAt])
 }
 
 enum UnknownStatus {

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -14,6 +15,10 @@ import type { Response } from 'express';
 import { Public } from '../auth/decorators/public.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../waba/storage.service';
+import {
+  MediaFetchService,
+  type MediaRef,
+} from '../waba/media-fetch.service';
 import { InternalGuard } from './internal.guard';
 import { FactsIngestService } from './facts-ingest.service';
 import { PublishAnalysisDto } from './dto/analysis.dto';
@@ -29,9 +34,12 @@ import { ConsentService } from '../consent/consent.service';
 @SkipThrottle()
 @Controller('internal')
 export class InternalController {
+  private readonly logger = new Logger(InternalController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly mediaFetch: MediaFetchService,
     private readonly factsIngest: FactsIngestService,
     private readonly consent: ConsentService,
   ) {}
@@ -131,7 +139,42 @@ export class InternalController {
       take: 50,
     });
 
+    // Política comercial (alçada) + brief anterior: o LLM refina em vez de recomeçar.
+    const [tenant, previousBrief] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { salesPolicy: true },
+      }),
+      this.prisma.dealBrief.findUnique({
+        where: { conversationId: message.conversationId },
+        select: {
+          stage: true,
+          stageConfidence: true,
+          contextSummary: true,
+          producerPosition: true,
+          dealChange: true,
+          intent: true,
+          urgency: true,
+          painPoint: true,
+          nextAction: true,
+          nextActionReason: true,
+          nextActionOwner: true,
+          nextActionKind: true,
+          nextActionDueHint: true,
+          nextActionDueAt: true,
+          suggestedReply: true,
+          managerGuidance: true,
+          analysisQuality: true,
+          blockerSubtype: true,
+          products: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
     return {
+      salesPolicy: tenant?.salesPolicy ?? null,
+      previousBrief,
       message: {
         id: message.id,
         tenantId,
@@ -142,6 +185,7 @@ export class InternalController {
         body: message.body,
         transcript: message.transcript,
         sentAt: message.sentAt,
+        mediaStatus: message.mediaStatus,
         mediaAsset: message.mediaAsset,
       },
       conversation: {
@@ -175,12 +219,72 @@ export class InternalController {
     };
   }
 
-  /** Mídia para STT — o worker não precisa de credenciais do object storage. */
-  @Get('media/:assetId')
-  async streamMedia(
-    @Param('assetId') assetId: string,
+  /**
+   * Bytes para STT. Prefere o object storage; sem cópia, baixa de novo
+   * no canal. A análise não espera o S3.
+   */
+  @Get('messages/:id/media')
+  async streamMessageMedia(
+    @Param('id') messageId: string,
     @Res() res: Response,
   ) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: {
+        mediaAsset: true,
+        conversation: {
+          include: {
+            wabaNumber: { include: { wabaAccount: true } },
+            channelEndpoint: { include: { channelAccount: true } },
+          },
+        },
+      },
+    });
+    if (!message) throw new NotFoundException('Message not found');
+
+    if (message.mediaAsset && this.storage.enabled) {
+      try {
+        const stream = await this.storage.getObjectStream(
+          message.mediaAsset.storageKey,
+        );
+        res.setHeader('Content-Type', message.mediaAsset.contentType);
+        if (message.mediaAsset.sizeBytes) {
+          res.setHeader('Content-Length', String(message.mediaAsset.sizeBytes));
+        }
+        stream.pipe(res);
+        return;
+      } catch (err) {
+        this.logger.warn(
+          `storage miss message=${messageId}: ${(err as Error).message} — baixando do canal`,
+        );
+      }
+    }
+
+    const ref = (message.mediaRef ?? {}) as MediaRef;
+    try {
+      const downloaded = await this.mediaFetch.download(message, ref);
+      this.logger.log(
+        `media bytes message=${messageId} n=${downloaded.data.length} type=${downloaded.contentType}`,
+      );
+      res.setHeader('Content-Type', downloaded.contentType);
+      res.setHeader('Content-Length', String(downloaded.data.length));
+      res.send(downloaded.data);
+    } catch (err) {
+      this.logger.error(
+        `media fetch message=${messageId}: ${(err as Error).message}`,
+      );
+      if (!res.headersSent) {
+        res.status(502).json({
+          statusCode: 502,
+          message: (err as Error).message,
+        });
+      }
+    }
+  }
+
+  /** Mídia para STT — o worker não precisa de credenciais do object storage. */
+  @Get('media/:assetId')
+  async streamMedia(@Param('assetId') assetId: string, @Res() res: Response) {
     const asset = await this.prisma.mediaAsset.findUnique({
       where: { id: assetId },
     });

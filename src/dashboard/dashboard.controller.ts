@@ -91,6 +91,17 @@ export class DashboardController {
     });
   }
 
+  /** Drawer do negócio: brief + temperatura + fatos abertos da conversa. */
+  @Get('deals/:conversationId')
+  @SkipThrottle()
+  getDeal(
+    @CurrentUser() user: TenantContext | undefined,
+    @Param('conversationId') conversationId: string,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    return this.dashboard.getDeal(user.tenantId, user.userId, conversationId);
+  }
+
   @Get('facts/:id')
   @SkipThrottle()
   getFact(

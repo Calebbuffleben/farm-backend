@@ -16,9 +16,106 @@ import { parseEmailCredentials, EmailClient } from '../email/email.client';
 import { emailOutboundSubject } from '../email/mailgun-parse';
 import { CoreIngestService } from '../channel/core-ingest.service';
 import { farmPublicUrl } from '../channel/public-origin';
+import { WaSessionService } from '../wa-session/wa-session.service';
+import { RedisStreamService } from './redis-stream.service';
+import { ConsentService } from '../consent/consent.service';
 import type { TenantContext } from '../tenancy/tenant-context.types';
+import {
+  dealTemperature,
+  type DealLevel,
+  type DealStage,
+} from '../dashboard/deal-temperature';
 
 const ADMIN_ROLES = new Set(['OWNER', 'ADMIN', 'MANAGER']);
+
+const BRIEF_SELECT = {
+  stage: true,
+  stageConfidence: true,
+  contextSummary: true,
+  producerPosition: true,
+  dealChange: true,
+  intent: true,
+  urgency: true,
+  painPoint: true,
+  nextAction: true,
+  nextActionReason: true,
+  nextActionOwner: true,
+  nextActionKind: true,
+  nextActionDueHint: true,
+  nextActionDueAt: true,
+  suggestedReply: true,
+  managerGuidance: true,
+  analysisQuality: true,
+  blockerSubtype: true,
+  products: true,
+  evidenceMessageId: true,
+  updatedAt: true,
+} as const;
+
+type BriefRow = {
+  stage: string;
+  stageConfidence: number;
+  contextSummary: string;
+  producerPosition: string | null;
+  dealChange: string | null;
+  intent: string;
+  urgency: string;
+  painPoint: string | null;
+  nextAction: string;
+  nextActionReason: string | null;
+  nextActionOwner: string;
+  nextActionKind: string;
+  nextActionDueHint: string | null;
+  nextActionDueAt: Date | null;
+  suggestedReply: string | null;
+  managerGuidance: string | null;
+  analysisQuality: string;
+  blockerSubtype: string | null;
+  products: unknown;
+  evidenceMessageId: string;
+  updatedAt: Date;
+};
+
+/** Card de Bordo: brief + temperatura calculada na leitura. */
+function toBriefView(
+  brief: BriefRow,
+  last: { sentAt: Date; direction: string } | null | undefined,
+  now: Date,
+) {
+  return {
+    stage: brief.stage as DealStage,
+    stageConfidence: brief.stageConfidence,
+    temperature: dealTemperature(
+      {
+        stage: brief.stage as DealStage,
+        intent: brief.intent as DealLevel,
+        urgency: brief.urgency as DealLevel,
+        lastMessageAt: last?.sentAt ?? null,
+        lastDirection: (last?.direction as 'IN' | 'OUT' | undefined) ?? null,
+      },
+      now,
+    ),
+    contextSummary: brief.contextSummary,
+    producerPosition: brief.producerPosition,
+    dealChange: brief.dealChange,
+    intent: brief.intent as DealLevel,
+    urgency: brief.urgency as DealLevel,
+    painPoint: brief.painPoint,
+    nextAction: brief.nextAction,
+    nextActionReason: brief.nextActionReason,
+    nextActionOwner: brief.nextActionOwner,
+    nextActionKind: brief.nextActionKind,
+    nextActionDueHint: brief.nextActionDueHint,
+    nextActionDueAt: brief.nextActionDueAt,
+    suggestedReply: brief.suggestedReply,
+    managerGuidance: brief.managerGuidance,
+    analysisQuality: brief.analysisQuality,
+    blockerSubtype: brief.blockerSubtype,
+    products: Array.isArray(brief.products) ? (brief.products as string[]) : [],
+    evidenceMessageId: brief.evidenceMessageId,
+    updatedAt: brief.updatedAt,
+  };
+}
 
 /**
  * Inbox do RTV. Escopo: MEMBER (RTV) enxerga apenas conversas dos números
@@ -33,6 +130,9 @@ export class InboxService {
     private readonly voice: VoiceClient,
     private readonly email: EmailClient,
     private readonly core: CoreIngestService,
+    private readonly waSession: WaSessionService,
+    private readonly stream: RedisStreamService,
+    private readonly consent: ConsentService,
   ) {}
 
   private numberScope(user: TenantContext) {
@@ -42,12 +142,14 @@ export class InboxService {
   }
 
   async listConversations(user: TenantContext) {
+    const now = new Date();
     const conversations = await this.prisma.conversation.findMany({
       where: { tenantId: user.tenantId, ...this.numberScope(user) },
       orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }],
       take: 100,
       include: {
         producer: { select: { id: true, name: true } },
+        brief: { select: BRIEF_SELECT },
         wabaNumber: { select: { id: true, displayNumber: true } },
         channelEndpoint: {
           select: {
@@ -83,7 +185,150 @@ export class InboxService {
       emailSubject: c.emailSubject,
       lastMessageAt: c.lastMessageAt,
       lastMessage: c.messages[0] ?? null,
+      brief: c.brief
+        ? (() => {
+            const v = toBriefView(c.brief, c.messages[0], now);
+            return {
+              stage: v.stage,
+              temperature: v.temperature,
+              nextAction: v.nextAction,
+              nextActionKind: v.nextActionKind,
+              updatedAt: v.updatedAt,
+            };
+          })()
+        : null,
     }));
+  }
+
+  /** Card de Bordo completo. Respeita o mesmo escopo de número do RTV. */
+  async getBrief(user: TenantContext, conversationId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id: conversationId,
+        tenantId: user.tenantId,
+        ...this.numberScope(user),
+      },
+      select: {
+        id: true,
+        producerId: true,
+        brief: { select: BRIEF_SELECT },
+        messages: {
+          orderBy: { sentAt: 'desc' },
+          take: 1,
+          select: { sentAt: true, direction: true },
+        },
+      },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    // Envelope: Nest devolve corpo vazio para `null` e o fetch do web quebra no .json()
+    if (conversation.brief) {
+      const quality = conversation.brief.analysisQuality;
+      // PARTIAL/STALE = fail-open (Gemini 503, deal inválido). Sem kick o Card
+      // fica para sempre com o aviso de revisão — o poll do inbox já existe.
+      if (quality === 'PARTIAL' || quality === 'STALE') {
+        await this.kickLatestInbound(
+          user.tenantId,
+          conversationId,
+          conversation.producerId,
+          120,
+        );
+      }
+      return {
+        brief: toBriefView(
+          conversation.brief,
+          conversation.messages[0],
+          new Date(),
+        ),
+        analysis: 'ready' as const,
+      };
+    }
+
+    const inbound = await this.findLatestAnalyzableInbound(
+      user.tenantId,
+      conversationId,
+    );
+    if (!inbound) {
+      return { brief: null, analysis: 'waiting_producer' as const };
+    }
+    if (
+      !(await this.consent.canAnalyze(user.tenantId, conversation.producerId))
+    ) {
+      return { brief: null, analysis: 'blocked' as const };
+    }
+    // Mensagem do produtor já chegou, mas o DealBrief não — a fila original
+    // pode ter sido consumida em fail-open ou o worker estava fora. Reenfileira.
+    await this.kickAnalysis(inbound);
+    return { brief: null, analysis: 'pending' as const };
+  }
+
+  private async findLatestAnalyzableInbound(
+    tenantId: string,
+    conversationId: string,
+  ) {
+    return this.prisma.message.findFirst({
+      where: {
+        tenantId,
+        conversationId,
+        direction: 'IN',
+        OR: [
+          { type: 'TEXT', body: { not: null } },
+          { transcript: { not: null } },
+          {
+            type: 'AUDIO',
+            mediaStatus: { in: ['PENDING_MEDIA', 'READY'] },
+          },
+        ],
+      },
+      orderBy: { sentAt: 'desc' },
+      select: {
+        id: true,
+        tenantId: true,
+        conversationId: true,
+        sessionId: true,
+        type: true,
+      },
+    });
+  }
+
+  private async kickLatestInbound(
+    tenantId: string,
+    conversationId: string,
+    producerId: string | null,
+    ttlSec = 30,
+  ): Promise<void> {
+    if (
+      producerId &&
+      !(await this.consent.canAnalyze(tenantId, producerId))
+    ) {
+      return;
+    }
+    const inbound = await this.findLatestAnalyzableInbound(
+      tenantId,
+      conversationId,
+    );
+    if (!inbound) return;
+    await this.kickAnalysis(inbound, ttlSec);
+  }
+
+  private async kickAnalysis(
+    message: {
+      id: string;
+      tenantId: string;
+      conversationId: string;
+      sessionId: string | null;
+      type: string;
+    },
+    ttlSec = 30,
+  ): Promise<void> {
+    const claimed = await this.stream.claimOnce(message.id, ttlSec);
+    if (!claimed) return;
+    await this.stream.publishMessageReady({
+      messageId: message.id,
+      tenantId: message.tenantId,
+      conversationId: message.conversationId,
+      sessionId: message.sessionId ?? '',
+      type: message.type,
+    });
   }
 
   async getConversationForUser(user: TenantContext, conversationId: string) {
@@ -147,6 +392,19 @@ export class InboxService {
     const kind = conversation.channelEndpoint.channelAccount.kind;
     if (kind === 'EMAIL') {
       return this.sendEmail(user, conversation, text, subject);
+    }
+    if (kind === 'WA_SESSION') {
+      // Porta trocável (Evolution/Baileys hoje, Evolution/Cloud API depois). Gate de sessão + teto do dia lá dentro.
+      const outbound = this.waSession.outboundFor(
+        conversation.channelEndpoint.channelAccount,
+        'inbox',
+      );
+      const vendorId = await outbound.sendText(conversation.peerAddress, text);
+      return this.persistOutgoing(user, conversation.id, {
+        wamid: `evo:${vendorId}`,
+        type: 'TEXT' as const,
+        body: text,
+      });
     }
     if (kind !== 'WABA') {
       throw new ForbiddenException('Envio de texto só no WABA ou e-mail');
