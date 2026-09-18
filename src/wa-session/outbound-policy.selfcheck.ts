@@ -90,6 +90,22 @@ assert.deepStrictEqual(
   { ...(audio?.mediaRef as Record<string, unknown>) },
   { vendor: 'evolution', messageId: 'M3', mimeType: 'audio/ogg; codecs=opus', filename: null, attempts: 0 },
 );
+const viewOnce = evolutionToInbound(
+  {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: peer, id: 'M3b' },
+      message: {
+        viewOnceMessageV2: {
+          message: { audioMessage: { mimetype: 'audio/ogg; codecs=opus' } },
+        },
+      },
+    },
+  },
+  ctx,
+);
+assert.strictEqual(viewOnce?.type, 'AUDIO', 'view-once unwrap');
+assert.strictEqual((viewOnce?.mediaRef as { messageId?: string })?.messageId, 'M3b');
 assert.strictEqual(
   evolutionToInbound({ event: 'messages.upsert', data: { key: { remoteJid: '1203630@g.us', id: 'M4' }, message: { conversation: 'x' } } }, ctx),
   null,

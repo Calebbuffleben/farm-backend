@@ -137,6 +137,7 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
     conversationId: string;
     sessionId: string | null;
     type: string;
+    direction: string;
     mediaRef: Prisma.JsonValue;
     conversation: {
       producerId: string | null;
@@ -188,10 +189,11 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
     }
 
     if (
-      await this.consent.canAnalyze(
+      message.direction === 'IN' &&
+      (await this.consent.canAnalyze(
         message.tenantId,
         message.conversation.producerId,
-      )
+      ))
     ) {
       await this.stream.publishMessageReady({
         messageId: message.id,

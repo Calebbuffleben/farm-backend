@@ -273,6 +273,11 @@ export class InboxService {
         OR: [
           { type: 'TEXT', body: { not: null } },
           { transcript: { not: null } },
+          {
+            type: 'AUDIO',
+            mediaStatus: 'READY',
+            mediaAssetId: { not: null },
+          },
         ],
       },
       orderBy: { sentAt: 'desc' },

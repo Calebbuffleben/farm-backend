@@ -177,6 +177,7 @@ export class InternalController {
         body: message.body,
         transcript: message.transcript,
         sentAt: message.sentAt,
+        mediaStatus: message.mediaStatus,
         mediaAsset: message.mediaAsset,
       },
       conversation: {

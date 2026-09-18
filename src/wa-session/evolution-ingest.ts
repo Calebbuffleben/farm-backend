@@ -37,6 +37,9 @@ interface EvolutionMessage {
   documentWithCaptionMessage?: { message?: EvolutionMessage };
   videoMessage?: { mimetype?: string; caption?: string };
   ephemeralMessage?: { message?: EvolutionMessage };
+  viewOnceMessage?: { message?: EvolutionMessage };
+  viewOnceMessageV2?: { message?: EvolutionMessage };
+  viewOnceMessageV2Extension?: { message?: EvolutionMessage };
 }
 
 export function evolutionEvent(p: EvolutionWebhook): 'message' | 'connected' | 'disconnected' | 'other' {
@@ -105,8 +108,16 @@ function peerDigits(key: NonNullable<EvolutionWebhook['data']>['key']): string |
 }
 
 function unwrap(m: EvolutionMessage | undefined): EvolutionMessage | undefined {
-  if (m?.ephemeralMessage?.message) return unwrap(m.ephemeralMessage.message);
-  if (m?.documentWithCaptionMessage?.message) return unwrap(m.documentWithCaptionMessage.message);
+  if (!m) return m;
+  if (m.ephemeralMessage?.message) return unwrap(m.ephemeralMessage.message);
+  if (m.viewOnceMessage?.message) return unwrap(m.viewOnceMessage.message);
+  if (m.viewOnceMessageV2?.message) return unwrap(m.viewOnceMessageV2.message);
+  if (m.viewOnceMessageV2Extension?.message) {
+    return unwrap(m.viewOnceMessageV2Extension.message);
+  }
+  if (m.documentWithCaptionMessage?.message) {
+    return unwrap(m.documentWithCaptionMessage.message);
+  }
   return m;
 }
 

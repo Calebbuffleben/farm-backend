@@ -135,7 +135,9 @@ export class EvolutionClient {
     const data = await this.call<{ base64?: string; mimetype?: string }>(
       'POST',
       `/chat/getBase64FromMediaMessage/${creds.instanceName}`,
-      { message: { key: { id: messageId } }, convertToMp4: false },
+      // PTT WhatsApp é OGG/Opus; Gemini recusa ou devolve STT vazio.
+      // convertToMp4 só age em audioMessage — imagem/documento inalterados.
+      { message: { key: { id: messageId } }, convertToMp4: true },
     );
     if (!data.base64) throw new Error('Evolution getBase64FromMediaMessage sem base64');
     return { data: Buffer.from(data.base64, 'base64'), mimetype: data.mimetype ?? null };
