@@ -1,5 +1,6 @@
 import {
   SESSION_INACTIVITY_MS,
+  isAnalyzableInbound,
   shouldRollSession,
 } from './core-ingest.service';
 import { normalizeWabaInbound } from '../waba/ingest.service';
@@ -19,6 +20,30 @@ describe('shouldRollSession', () => {
 
   it('does not roll for brand-new conversation (no lastMessageAt)', () => {
     expect(shouldRollSession(null, now)).toBe(false);
+  });
+});
+
+describe('isAnalyzableInbound', () => {
+  it('publishes text and audio', () => {
+    expect(isAnalyzableInbound({ type: 'TEXT', direction: 'IN', body: 'oi' })).toBe(true);
+    expect(isAnalyzableInbound({ type: 'AUDIO', direction: 'IN', body: null })).toBe(true);
+  });
+
+  it('publishes image/document when caption is in body', () => {
+    expect(
+      isAnalyzableInbound({ type: 'IMAGE', direction: 'IN', body: 'ferrugem na soja' }),
+    ).toBe(true);
+    expect(
+      isAnalyzableInbound({ type: 'DOCUMENT', direction: 'IN', body: 'pedido 50 galões' }),
+    ).toBe(true);
+  });
+
+  it('skips image without caption and outbound', () => {
+    expect(isAnalyzableInbound({ type: 'IMAGE', direction: 'IN', body: null })).toBe(false);
+    expect(isAnalyzableInbound({ type: 'IMAGE', direction: 'IN', body: '  ' })).toBe(false);
+    expect(
+      isAnalyzableInbound({ type: 'IMAGE', direction: 'OUT', body: 'legenda' }),
+    ).toBe(false);
   });
 });
 
@@ -69,6 +94,17 @@ describe('normalizeWabaInbound', () => {
     });
     expect(n?.type).toBe('IMAGE');
     expect(n?.body).toBe('a soja da capela');
+  });
+
+  it('trims blank image caption to null', () => {
+    const n = normalizeWabaInbound('t1', 'ep1', {
+      id: 'x',
+      from: '+55661111',
+      type: 'image',
+      image: { id: 'mid', caption: '   ' },
+    });
+    expect(n?.type).toBe('IMAGE');
+    expect(n?.body).toBeNull();
   });
 
   it('returns null without id or from', () => {

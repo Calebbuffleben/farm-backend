@@ -143,15 +143,27 @@ function pickMedia(m: EvolutionMessage | undefined): {
 } | null {
   if (!m) return null;
   if (m.audioMessage) return { type: 'AUDIO', mimeType: m.audioMessage.mimetype };
-  if (m.imageMessage) return { type: 'IMAGE', mimeType: m.imageMessage.mimetype, caption: m.imageMessage.caption };
+  if (m.imageMessage) {
+    return {
+      type: 'IMAGE',
+      mimeType: m.imageMessage.mimetype,
+      caption: m.imageMessage.caption?.trim() || undefined,
+    };
+  }
   if (m.documentMessage) {
     return {
       type: 'DOCUMENT',
       mimeType: m.documentMessage.mimetype,
-      caption: m.documentMessage.caption,
+      caption: m.documentMessage.caption?.trim() || undefined,
       filename: m.documentMessage.fileName ?? m.documentMessage.title,
     };
   }
-  if (m.videoMessage) return { type: 'OTHER', mimeType: m.videoMessage.mimetype, caption: m.videoMessage.caption };
+  if (m.videoMessage) {
+    return {
+      type: 'OTHER',
+      mimeType: m.videoMessage.mimetype,
+      caption: m.videoMessage.caption?.trim() || undefined,
+    };
+  }
   return null;
 }

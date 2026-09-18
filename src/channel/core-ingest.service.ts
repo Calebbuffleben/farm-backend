@@ -28,6 +28,22 @@ export function shouldRollSession(
   return now.getTime() - lastMessageAt.getTime() > SESSION_INACTIVITY_MS;
 }
 
+/** Texto, áudio, ou mídia com legenda (caption do WhatsApp em `body`). */
+export function isAnalyzableInbound(n: {
+  type: string;
+  direction: string;
+  body?: string | null;
+}): boolean {
+  if (n.direction !== 'IN') return false;
+  if (n.type === 'TEXT' || n.type === 'AUDIO') return true;
+  return Boolean(n.body?.trim());
+}
+
+function captionBody(raw: string | null | undefined): string | null {
+  const t = raw?.trim();
+  return t ? t : null;
+}
+
 export type NormalizedInbound = {
   tenantId: string;
   endpointId: string;
@@ -195,7 +211,7 @@ export class CoreIngestService implements OnModuleInit, OnModuleDestroy {
           wamid: n.externalId,
           direction: n.direction,
           type: n.type,
-          body: n.body ?? null,
+          body: captionBody(n.body),
           mediaStatus: pendingMedia ? 'PENDING_MEDIA' : 'NONE',
           mediaRef: n.mediaRef ?? Prisma.JsonNull,
           sentAt: n.sentAt,
@@ -208,11 +224,10 @@ export class CoreIngestService implements OnModuleInit, OnModuleDestroy {
       });
 
       // OUT só chega aqui via WA_SESSION fromMe (RTV digitou no celular): guarda, não analisa.
-      // AUDIO entra na fila já na ingestão — o worker baixa do canal na hora
-      // do STT. Object storage é só para o player; não pode bloquear a IA.
+      // AUDIO entra na fila na ingestão. Imagem/documento com legenda também:
+      // o caption em `body` é texto comercial (não espera o download do ficheiro).
       if (
-        (n.type === 'TEXT' || n.type === 'AUDIO') &&
-        n.direction === 'IN' &&
+        isAnalyzableInbound(n) &&
         (await this.consent.canAnalyze(n.tenantId, producerId))
       ) {
         await this.stream.publishMessageReady({

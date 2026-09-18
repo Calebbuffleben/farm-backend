@@ -76,7 +76,7 @@ export function normalizeWabaInbound(
     body:
       msg.type === 'text'
         ? (msg.text?.body ?? null)
-        : (media?.caption ?? null),
+        : (media?.caption?.trim() || null),
     sentAt: msg.timestamp
       ? new Date(Number(msg.timestamp) * 1000)
       : new Date(),

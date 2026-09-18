@@ -277,6 +277,10 @@ export class InboxService {
             type: 'AUDIO',
             mediaStatus: { in: ['PENDING_MEDIA', 'READY'] },
           },
+          {
+            type: { in: ['IMAGE', 'DOCUMENT', 'OTHER'] },
+            body: { not: null },
+          },
         ],
       },
       orderBy: { sentAt: 'desc' },

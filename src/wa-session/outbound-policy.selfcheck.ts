@@ -128,6 +128,18 @@ const withBytes = evolutionToInbound(
   ctx,
 );
 assert.strictEqual((withBytes?.mediaRef as { inlineBase64?: string })?.inlineBase64, 'ZGVtbw==');
+const photo = evolutionToInbound(
+  {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: peer, id: 'M7' },
+      message: { imageMessage: { mimetype: 'image/jpeg', caption: '  ferrugem na soja  ' } },
+    },
+  },
+  ctx,
+);
+assert.strictEqual(photo?.type, 'IMAGE');
+assert.strictEqual(photo?.body, 'ferrugem na soja', 'caption vira body');
 assert.strictEqual(
   evolutionToInbound({ event: 'messages.upsert', data: { key: { remoteJid: '1203630@g.us', id: 'M4' }, message: { conversation: 'x' } } }, ctx),
   null,
