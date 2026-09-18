@@ -51,18 +51,28 @@ export class DashboardService {
   async home(tenantId: string, days: number, cuts: DashboardCuts) {
     const now = new Date();
     const window = rollingWindow(now, days);
-    const [raw, unknownPending] = await Promise.all([
+    const [rawFacts, unknownPending, briefs] = await Promise.all([
       this.loadOpenFacts(tenantId, window.previousFrom),
       this.prisma.unknownQueueItem.count({
         where: { tenantId, status: 'PENDING' },
       }),
+      this.loadBriefs(tenantId),
     ]);
-    const all = await this.withRtvNames(raw);
+    const rtvIds = [
+      ...new Set(
+        [...rawFacts.map((r) => r.rtvUserId), ...briefs.map((b) => b.rtvUserId)].filter(
+          (id): id is string => Boolean(id),
+        ),
+      ),
+    ];
+    const names = await this.loadRtvNames(rtvIds);
+    const all = rawFacts.map((r) => ({
+      ...r,
+      rtvName: r.rtvUserId ? (names.get(r.rtvUserId) ?? null) : null,
+    }));
     const filtered = applyCuts(all, cuts);
     const home = buildHome(filtered, now, window, unknownPending);
-
-    // Centro de Comando: briefs + fatos abertos da mesma carga, mesmos cortes.
-    const deals = await this.loadDeals(tenantId, all, now);
+    const deals = this.assembleDeals(briefs, all, names, now);
     const command = buildCommand(applyDealCuts(deals, cuts), now);
 
     return {
@@ -228,12 +238,8 @@ export class DashboardService {
    * DealBrief + última mensagem por conversa. Fatos abertos vêm da carga já
    * feita para as 5 perguntas (mesma janela) — nada de segunda varredura.
    */
-  private async loadDeals(
-    tenantId: string,
-    facts: FactRow[],
-    now: Date,
-  ): Promise<DealRow[]> {
-    const briefs = await this.prisma.dealBrief.findMany({
+  private loadBriefs(tenantId: string) {
+    return this.prisma.dealBrief.findMany({
       where: { tenantId },
       orderBy: { updatedAt: 'desc' },
       take: DEAL_CAP,
@@ -257,6 +263,14 @@ export class DashboardService {
         },
       },
     });
+  }
+
+  private assembleDeals(
+    briefs: Awaited<ReturnType<DashboardService['loadBriefs']>>,
+    facts: FactRow[],
+    names: Map<string, string>,
+    now: Date,
+  ): DealRow[] {
     if (!briefs.length) return [];
 
     const factsByConversation = new Map<string, FactRow[]>();
@@ -265,23 +279,6 @@ export class DashboardService {
       if (list) list.push(fact);
       else factsByConversation.set(fact.conversationId, [fact]);
     }
-
-    const rtvIds = [
-      ...new Set(
-        briefs
-          .map((b) => b.rtvUserId)
-          .filter((id): id is string => Boolean(id)),
-      ),
-    ];
-    const users = rtvIds.length
-      ? await this.prisma.user.findMany({
-          where: { id: { in: rtvIds } },
-          select: { id: true, name: true, email: true },
-        })
-      : [];
-    const names = new Map(
-      users.map((u) => [u.id, u.name?.trim() || u.email] as const),
-    );
 
     return briefs.map((b) => {
       const convFacts = factsByConversation.get(b.conversationId) ?? [];
@@ -578,23 +575,12 @@ export class DashboardService {
     }));
   }
 
-  private async withRtvNames(rows: FactRow[]): Promise<FactRow[]> {
-    const ids = [
-      ...new Set(
-        rows.map((r) => r.rtvUserId).filter((id): id is string => Boolean(id)),
-      ),
-    ];
-    if (!ids.length) return rows;
+  private async loadRtvNames(ids: string[]): Promise<Map<string, string>> {
+    if (!ids.length) return new Map();
     const users = await this.prisma.user.findMany({
       where: { id: { in: ids } },
       select: { id: true, name: true, email: true },
     });
-    const names = new Map(
-      users.map((u) => [u.id, u.name?.trim() || u.email] as const),
-    );
-    return rows.map((r) => ({
-      ...r,
-      rtvName: r.rtvUserId ? (names.get(r.rtvUserId) ?? null) : null,
-    }));
+    return new Map(users.map((u) => [u.id, u.name?.trim() || u.email] as const));
   }
 }

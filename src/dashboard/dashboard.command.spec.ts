@@ -116,6 +116,23 @@ describe('buildPipeline', () => {
     );
     // SEM_NEGOCIO não entra no gargalo
     expect(pipeline.byBlocker.reduce((a, b) => a + b.count, 0)).toBe(3);
+    expect(pipeline.byStage.find((s) => s.stage === 'NEGOCIACAO')?.deals[0]).not.toHaveProperty(
+      'suggestedReply',
+    );
+  });
+
+  it('corta deals serializados no pipeline sem mudar as contagens', () => {
+    const rows = Array.from({ length: 15 }, () => row({ stage: 'SONDAGEM' }));
+    const pipeline = buildPipeline(rows, NOW);
+    const sondagem = pipeline.byStage.find((s) => s.stage === 'SONDAGEM');
+    expect(sondagem?.count).toBe(15);
+    expect(sondagem?.deals).toHaveLength(12);
+    const blockers = buildPipeline(
+      Array.from({ length: 8 }, () => row({ stage: 'NEGOCIACAO', blockerSubtype: 'preco' })),
+      NOW,
+    ).byBlocker[0];
+    expect(blockers.count).toBe(8);
+    expect(blockers.deals).toHaveLength(4);
   });
 });
 

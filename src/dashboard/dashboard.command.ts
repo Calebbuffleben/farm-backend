@@ -106,6 +106,35 @@ export interface DealCard {
   updatedAt: string;
 }
 
+/** Card da lista/pipeline/atenção — sem textos do drawer. */
+export interface DealListCard {
+  conversationId: string;
+  producerName: string | null;
+  producerPhone: string | null;
+  farmNames: string[];
+  rtvUserId: string | null;
+  rtvName: string | null;
+  stage: DealStage;
+  temperature: DealTemperature;
+  contextSummary: string;
+  painPoint: string | null;
+  nextAction: string;
+  nextActionOwner: 'RTV' | 'MANAGER';
+  nextActionKind: string;
+  nextActionDueAt: string | null;
+  managerGuidance: string | null;
+  blockerSubtype: string | null;
+  moneyHints: string[];
+  criticalFacts: string[];
+  lastMessageAt: string | null;
+  lastDirection: 'IN' | 'OUT' | null;
+  unanswered: boolean;
+  updatedAt: string;
+}
+
+export const PIPELINE_STAGE_DEAL_CAP = 12;
+export const PIPELINE_BLOCKER_DEAL_CAP = 4;
+
 export type AttentionReason =
   | 'hot_with_pain'
   | 'cooling_late_stage'
@@ -114,7 +143,7 @@ export type AttentionReason =
   | 'followup_overdue'
   | 'manager_escalation';
 
-export interface AttentionItem extends DealCard {
+export interface AttentionItem extends DealListCard {
   reasons: AttentionReason[];
   priority: number;
 }
@@ -184,7 +213,38 @@ export function toDealCard(row: DealRow, now: Date): DealCard {
   };
 }
 
-function sortCards(a: DealCard, b: DealCard): number {
+export function toListCard(row: DealRow, now: Date): DealListCard {
+  const card = toDealCard(row, now);
+  return {
+    conversationId: card.conversationId,
+    producerName: card.producerName,
+    producerPhone: card.producerPhone,
+    farmNames: card.farmNames,
+    rtvUserId: card.rtvUserId,
+    rtvName: card.rtvName,
+    stage: card.stage,
+    temperature: card.temperature,
+    contextSummary: card.contextSummary,
+    painPoint: card.painPoint,
+    nextAction: card.nextAction,
+    nextActionOwner: card.nextActionOwner,
+    nextActionKind: card.nextActionKind,
+    nextActionDueAt: card.nextActionDueAt,
+    managerGuidance: card.managerGuidance,
+    blockerSubtype: card.blockerSubtype,
+    moneyHints: card.moneyHints,
+    criticalFacts: card.criticalFacts,
+    lastMessageAt: card.lastMessageAt,
+    lastDirection: card.lastDirection,
+    unanswered: card.unanswered,
+    updatedAt: card.updatedAt,
+  };
+}
+
+function sortCards(
+  a: { temperature: DealTemperature; lastMessageAt: string | null },
+  b: { temperature: DealTemperature; lastMessageAt: string | null },
+): number {
   const t = TEMPERATURE_ORDER[a.temperature] - TEMPERATURE_ORDER[b.temperature];
   if (t !== 0) return t;
   const al = a.lastMessageAt ? Date.parse(a.lastMessageAt) : 0;
@@ -242,12 +302,16 @@ export function buildRadar(rows: DealRow[], now: Date): RadarRow[] {
 }
 
 export function buildPipeline(rows: DealRow[], now: Date) {
-  const cards = rows.map((r) => toDealCard(r, now));
+  const cards = rows.map((r) => toListCard(r, now));
   const byStage = DEAL_STAGES.map((stage) => {
     const deals = cards.filter((c) => c.stage === stage).sort(sortCards);
-    return { stage, count: deals.length, deals };
+    return {
+      stage,
+      count: deals.length,
+      deals: deals.slice(0, PIPELINE_STAGE_DEAL_CAP),
+    };
   });
-  const blockerMap = new Map<string, DealCard[]>();
+  const blockerMap = new Map<string, DealListCard[]>();
   for (const card of cards) {
     if (!card.blockerSubtype || card.stage === 'SEM_NEGOCIO') continue;
     const list = blockerMap.get(card.blockerSubtype);
@@ -255,12 +319,15 @@ export function buildPipeline(rows: DealRow[], now: Date) {
     else blockerMap.set(card.blockerSubtype, [card]);
   }
   const byBlocker = [...blockerMap.entries()]
-    .map(([blockerSubtype, deals]) => ({
-      blockerSubtype,
-      count: deals.length,
-      deals: deals.sort(sortCards),
-      moneyHints: [...new Set(deals.flatMap((d) => d.moneyHints))].slice(0, 12),
-    }))
+    .map(([blockerSubtype, deals]) => {
+      const sorted = deals.sort(sortCards);
+      return {
+        blockerSubtype,
+        count: sorted.length,
+        deals: sorted.slice(0, PIPELINE_BLOCKER_DEAL_CAP),
+        moneyHints: [...new Set(sorted.flatMap((d) => d.moneyHints))].slice(0, 12),
+      };
+    })
     .sort(
       (a, b) =>
         b.count - a.count || a.blockerSubtype.localeCompare(b.blockerSubtype),
@@ -289,7 +356,7 @@ export function buildAttention(
   const items: AttentionItem[] = [];
   for (const row of rows) {
     if (row.stage === 'SEM_NEGOCIO') continue;
-    const card = toDealCard(row, now);
+    const card = toListCard(row, now);
     const reasons: AttentionReason[] = [];
     if (card.temperature === 'HOT' && card.painPoint)
       reasons.push('hot_with_pain');
@@ -320,7 +387,7 @@ export function buildAttention(
 }
 
 export function buildCommand(rows: DealRow[], now: Date) {
-  const cards = rows.map((r) => toDealCard(r, now));
+  const cards = rows.map((r) => toListCard(r, now));
   const open = cards.filter((c) => c.stage !== 'SEM_NEGOCIO');
   return {
     summary: {

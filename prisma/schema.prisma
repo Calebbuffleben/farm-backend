@@ -710,6 +710,7 @@ model CommercialFact {
   @@index([tenantId, farmId, status])
   @@index([tenantId, rtvUserId, occurredAt])
   @@index([tenantId, status, dueAt])
+  @@index([tenantId, status, occurredAt])
 }
 
 /// Estado comercial aberto da fazenda — materializado a partir dos fatos OPEN.
@@ -804,6 +805,7 @@ model DealBrief {
   @@index([tenantId, stage])
   @@index([tenantId, rtvUserId])
   @@index([tenantId, producerId])
+  @@index([tenantId, updatedAt])
 }
 
 enum UnknownStatus {
