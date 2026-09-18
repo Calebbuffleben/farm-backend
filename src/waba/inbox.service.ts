@@ -275,8 +275,7 @@ export class InboxService {
           { transcript: { not: null } },
           {
             type: 'AUDIO',
-            mediaStatus: 'READY',
-            mediaAssetId: { not: null },
+            mediaStatus: { in: ['PENDING_MEDIA', 'READY'] },
           },
         ],
       },

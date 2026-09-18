@@ -208,8 +208,10 @@ export class CoreIngestService implements OnModuleInit, OnModuleDestroy {
       });
 
       // OUT só chega aqui via WA_SESSION fromMe (RTV digitou no celular): guarda, não analisa.
+      // AUDIO entra na fila já na ingestão — o worker baixa do canal na hora
+      // do STT. Object storage é só para o player; não pode bloquear a IA.
       if (
-        n.type === 'TEXT' &&
+        (n.type === 'TEXT' || n.type === 'AUDIO') &&
         n.direction === 'IN' &&
         (await this.consent.canAnalyze(n.tenantId, producerId))
       ) {

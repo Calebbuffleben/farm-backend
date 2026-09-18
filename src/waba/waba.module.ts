@@ -11,6 +11,7 @@ import { BspClient } from './bsp.client';
 import { WabaCloudFactory } from './waba-cloud';
 import { IngestService } from './ingest.service';
 import { MediaWorker } from './media.worker';
+import { MediaFetchService } from './media-fetch.service';
 import { InboxService } from './inbox.service';
 import { WabaWebhookController } from './webhook.controller';
 import { WabaSettingsController } from './waba-settings.controller';
@@ -36,9 +37,10 @@ import { InboxController } from './inbox.controller';
     BspClient,
     WabaCloudFactory,
     IngestService,
+    MediaFetchService,
     MediaWorker,
     InboxService,
   ],
-  exports: [StorageModule, InboxService],
+  exports: [StorageModule, InboxService, MediaFetchService],
 })
 export class WabaModule {}
