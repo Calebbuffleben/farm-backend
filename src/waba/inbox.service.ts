@@ -230,6 +230,7 @@ export class InboxService {
           user.tenantId,
           conversationId,
           conversation.producerId,
+          120,
         );
       }
       return {
@@ -289,6 +290,7 @@ export class InboxService {
     tenantId: string,
     conversationId: string,
     producerId: string | null,
+    ttlSec = 30,
   ): Promise<void> {
     if (
       producerId &&
@@ -301,17 +303,20 @@ export class InboxService {
       conversationId,
     );
     if (!inbound) return;
-    await this.kickAnalysis(inbound);
+    await this.kickAnalysis(inbound, ttlSec);
   }
 
-  private async kickAnalysis(message: {
-    id: string;
-    tenantId: string;
-    conversationId: string;
-    sessionId: string | null;
-    type: string;
-  }): Promise<void> {
-    const claimed = await this.stream.claimOnce(message.id, 30);
+  private async kickAnalysis(
+    message: {
+      id: string;
+      tenantId: string;
+      conversationId: string;
+      sessionId: string | null;
+      type: string;
+    },
+    ttlSec = 30,
+  ): Promise<void> {
+    const claimed = await this.stream.claimOnce(message.id, ttlSec);
     if (!claimed) return;
     await this.stream.publishMessageReady({
       messageId: message.id,
