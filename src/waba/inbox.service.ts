@@ -222,6 +222,16 @@ export class InboxService {
     if (!conversation) throw new NotFoundException('Conversation not found');
     // Envelope: Nest devolve corpo vazio para `null` e o fetch do web quebra no .json()
     if (conversation.brief) {
+      const quality = conversation.brief.analysisQuality;
+      // PARTIAL/STALE = fail-open (Gemini 503, deal inválido). Sem kick o Card
+      // fica para sempre com o aviso de revisão — o poll do inbox já existe.
+      if (quality === 'PARTIAL' || quality === 'STALE') {
+        await this.kickLatestInbound(
+          user.tenantId,
+          conversationId,
+          conversation.producerId,
+        );
+      }
       return {
         brief: toBriefView(
           conversation.brief,
@@ -232,9 +242,31 @@ export class InboxService {
       };
     }
 
-    const inbound = await this.prisma.message.findFirst({
+    const inbound = await this.findLatestAnalyzableInbound(
+      user.tenantId,
+      conversationId,
+    );
+    if (!inbound) {
+      return { brief: null, analysis: 'waiting_producer' as const };
+    }
+    if (
+      !(await this.consent.canAnalyze(user.tenantId, conversation.producerId))
+    ) {
+      return { brief: null, analysis: 'blocked' as const };
+    }
+    // Mensagem do produtor já chegou, mas o DealBrief não — a fila original
+    // pode ter sido consumida em fail-open ou o worker estava fora. Reenfileira.
+    await this.kickAnalysis(inbound);
+    return { brief: null, analysis: 'pending' as const };
+  }
+
+  private async findLatestAnalyzableInbound(
+    tenantId: string,
+    conversationId: string,
+  ) {
+    return this.prisma.message.findFirst({
       where: {
-        tenantId: user.tenantId,
+        tenantId,
         conversationId,
         direction: 'IN',
         OR: [
@@ -251,18 +283,25 @@ export class InboxService {
         type: true,
       },
     });
-    if (!inbound) {
-      return { brief: null, analysis: 'waiting_producer' as const };
-    }
+  }
+
+  private async kickLatestInbound(
+    tenantId: string,
+    conversationId: string,
+    producerId: string | null,
+  ): Promise<void> {
     if (
-      !(await this.consent.canAnalyze(user.tenantId, conversation.producerId))
+      producerId &&
+      !(await this.consent.canAnalyze(tenantId, producerId))
     ) {
-      return { brief: null, analysis: 'blocked' as const };
+      return;
     }
-    // Mensagem do produtor já chegou, mas o DealBrief não — a fila original
-    // pode ter sido consumida em fail-open ou o worker estava fora. Reenfileira.
+    const inbound = await this.findLatestAnalyzableInbound(
+      tenantId,
+      conversationId,
+    );
+    if (!inbound) return;
     await this.kickAnalysis(inbound);
-    return { brief: null, analysis: 'pending' as const };
   }
 
   private async kickAnalysis(message: {
