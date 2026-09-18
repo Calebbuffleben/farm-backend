@@ -163,7 +163,9 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
               : await this.downloadMeta(message, ref);
 
     const contentType =
-      ref.mimeType?.split(';')[0]?.trim() || downloaded.contentType;
+      downloaded.contentType.split(';')[0]?.trim() ||
+      ref.mimeType?.split(';')[0]?.trim() ||
+      'application/octet-stream';
     const storageKey = `${message.tenantId}/${message.conversationId}/${message.id}`;
     await this.storage.putObject(storageKey, downloaded.data, contentType);
 
@@ -334,8 +336,11 @@ export class MediaWorker implements OnModuleInit, OnModuleDestroy {
     const { data, mimetype } = await this.evolution.mediaBase64(creds, ref.messageId);
     return {
       data,
+      // MIME da Evolution (mp4 após convert) vence o ref original (ogg/opus).
       contentType:
-        ref.mimeType?.split(';')[0]?.trim() || mimetype?.split(';')[0]?.trim() || 'application/octet-stream',
+        mimetype?.split(';')[0]?.trim() ||
+        ref.mimeType?.split(';')[0]?.trim() ||
+        'application/octet-stream',
     };
   }
 

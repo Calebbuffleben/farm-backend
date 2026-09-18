@@ -132,12 +132,25 @@ export class EvolutionClient {
 
   /** Mídia inbound: a Evolution guarda a mensagem e devolve o binário em base64. */
   async mediaBase64(creds: WaSessionCreds, messageId: string): Promise<{ data: Buffer; mimetype: string | null }> {
+    try {
+      return await this.fetchMediaBase64(creds, messageId, true);
+    } catch (err) {
+      this.logger.warn(
+        `convertToMp4 falhou message=${messageId}: ${(err as Error).message} — baixando original`,
+      );
+      return this.fetchMediaBase64(creds, messageId, false);
+    }
+  }
+
+  private async fetchMediaBase64(
+    creds: WaSessionCreds,
+    messageId: string,
+    convertToMp4: boolean,
+  ): Promise<{ data: Buffer; mimetype: string | null }> {
     const data = await this.call<{ base64?: string; mimetype?: string }>(
       'POST',
       `/chat/getBase64FromMediaMessage/${creds.instanceName}`,
-      // PTT WhatsApp é OGG/Opus; Gemini recusa ou devolve STT vazio.
-      // convertToMp4 só age em audioMessage — imagem/documento inalterados.
-      { message: { key: { id: messageId } }, convertToMp4: true },
+      { message: { key: { id: messageId } }, convertToMp4 },
     );
     if (!data.base64) throw new Error('Evolution getBase64FromMediaMessage sem base64');
     return { data: Buffer.from(data.base64, 'base64'), mimetype: data.mimetype ?? null };
