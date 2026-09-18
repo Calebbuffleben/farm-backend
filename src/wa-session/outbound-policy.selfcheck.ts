@@ -88,7 +88,15 @@ const audio = evolutionToInbound(
 assert.strictEqual(audio?.type, 'AUDIO');
 assert.deepStrictEqual(
   { ...(audio?.mediaRef as Record<string, unknown>) },
-  { vendor: 'evolution', messageId: 'M3', mimeType: 'audio/ogg; codecs=opus', filename: null, attempts: 0 },
+  {
+    vendor: 'evolution',
+    messageId: 'M3',
+    mimeType: 'audio/ogg; codecs=opus',
+    filename: null,
+    fromMe: false,
+    remoteJid: peer,
+    attempts: 0,
+  },
 );
 const viewOnce = evolutionToInbound(
   {
@@ -106,6 +114,20 @@ const viewOnce = evolutionToInbound(
 );
 assert.strictEqual(viewOnce?.type, 'AUDIO', 'view-once unwrap');
 assert.strictEqual((viewOnce?.mediaRef as { messageId?: string })?.messageId, 'M3b');
+const withBytes = evolutionToInbound(
+  {
+    event: 'messages.upsert',
+    data: {
+      key: { remoteJid: peer, id: 'M3c' },
+      message: {
+        audioMessage: { mimetype: 'audio/ogg; codecs=opus' },
+        base64: 'ZGVtbw==',
+      },
+    },
+  },
+  ctx,
+);
+assert.strictEqual((withBytes?.mediaRef as { inlineBase64?: string })?.inlineBase64, 'ZGVtbw==');
 assert.strictEqual(
   evolutionToInbound({ event: 'messages.upsert', data: { key: { remoteJid: '1203630@g.us', id: 'M4' }, message: { conversation: 'x' } } }, ctx),
   null,

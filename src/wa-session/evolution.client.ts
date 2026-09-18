@@ -35,6 +35,17 @@ export type ConnectionState = 'open' | 'connecting' | 'close';
 
 const WEBHOOK_EVENTS = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'];
 
+function webhookConfig(url: string) {
+  return {
+    enabled: true,
+    url,
+    byEvents: false,
+    // Bytes no webhook: STT não depende de getBase64 (ffmpeg/DB da Evolution).
+    base64: true,
+    events: WEBHOOK_EVENTS,
+  };
+}
+
 /**
  * Cliente REST da Evolution API v2 (clone em farm/evolution-api, processo no
  * host via scripts/start-evolution.sh). fetch puro; header `apikey` =
@@ -58,7 +69,7 @@ export class EvolutionClient {
       instanceName,
       integration: 'WHATSAPP-BAILEYS',
       qrcode: false,
-      ...(webhookUrl ? { webhook: { url: webhookUrl, byEvents: false, base64: false, events: WEBHOOK_EVENTS } } : {}),
+      ...(webhookUrl ? { webhook: webhookConfig(webhookUrl) } : {}),
       ...this.proxyFields(),
     });
     const token = typeof data.hash === 'string' ? data.hash : data.hash?.apikey;
@@ -69,7 +80,7 @@ export class EvolutionClient {
   /** Re-aponta o webhook (URL pública mudou). */
   async setWebhook(creds: WaSessionCreds, url: string): Promise<void> {
     await this.call('POST', `/webhook/set/${creds.instanceName}`, {
-      webhook: { enabled: true, url, byEvents: false, base64: false, events: WEBHOOK_EVENTS },
+      webhook: webhookConfig(url),
     });
   }
 
@@ -131,14 +142,18 @@ export class EvolutionClient {
   }
 
   /** Mídia inbound: a Evolution guarda a mensagem e devolve o binário em base64. */
-  async mediaBase64(creds: WaSessionCreds, messageId: string): Promise<{ data: Buffer; mimetype: string | null }> {
+  async mediaBase64(
+    creds: WaSessionCreds,
+    messageId: string,
+    extra?: { fromMe?: boolean; remoteJid?: string | null },
+  ): Promise<{ data: Buffer; mimetype: string | null }> {
     try {
-      return await this.fetchMediaBase64(creds, messageId, true);
+      return await this.fetchMediaBase64(creds, messageId, false, extra);
     } catch (err) {
       this.logger.warn(
-        `convertToMp4 falhou message=${messageId}: ${(err as Error).message} — baixando original`,
+        `getBase64 original falhou message=${messageId}: ${(err as Error).message} — tentando convertToMp4`,
       );
-      return this.fetchMediaBase64(creds, messageId, false);
+      return this.fetchMediaBase64(creds, messageId, true, extra);
     }
   }
 
@@ -146,11 +161,21 @@ export class EvolutionClient {
     creds: WaSessionCreds,
     messageId: string,
     convertToMp4: boolean,
+    extra?: { fromMe?: boolean; remoteJid?: string | null },
   ): Promise<{ data: Buffer; mimetype: string | null }> {
     const data = await this.call<{ base64?: string; mimetype?: string }>(
       'POST',
       `/chat/getBase64FromMediaMessage/${creds.instanceName}`,
-      { message: { key: { id: messageId } }, convertToMp4 },
+      {
+        message: {
+          key: {
+            id: messageId,
+            ...(extra?.fromMe !== undefined ? { fromMe: extra.fromMe } : {}),
+            ...(extra?.remoteJid ? { remoteJid: extra.remoteJid } : {}),
+          },
+        },
+        convertToMp4,
+      },
     );
     if (!data.base64) throw new Error('Evolution getBase64FromMediaMessage sem base64');
     return { data: Buffer.from(data.base64, 'base64'), mimetype: data.mimetype ?? null };

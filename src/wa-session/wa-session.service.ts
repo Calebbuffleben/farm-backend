@@ -281,6 +281,7 @@ export class WaSessionService {
       message: phone ?? account.id,
       tenantId: account.tenantId,
     });
+    await this.ensureMediaWebhook(account, creds);
   }
 
   private async markDisconnected(accountId: string, tenantId: string, why: string) {
@@ -336,6 +337,13 @@ export class WaSessionService {
           const n = evolutionToInbound(payload, { tenantId: account.tenantId, endpointId: endpoint.id });
           if (!n) return;
           await this.core.ingest(n);
+          if (
+            creds &&
+            n.type === 'AUDIO' &&
+            !(n.mediaRef as { inlineBase64?: string } | undefined)?.inlineBase64
+          ) {
+            await this.ensureMediaWebhook(account, creds);
+          }
           if (n.direction === 'IN' && n.type === 'TEXT' && isOptOutText(n.body)) {
             await this.prisma.conversation.updateMany({
               where: {
@@ -353,6 +361,19 @@ export class WaSessionService {
           return;
       }
     });
+  }
+
+  /** Liga `base64: true` no webhook da instância (STT sem getBase64). */
+  private async ensureMediaWebhook(
+    account: ChannelAccount,
+    creds: WaSessionCreds,
+  ): Promise<void> {
+    const base = webhookBaseUrl();
+    if (!base || !account.webhookSecret) return;
+    const url = `${base}/wa-session/webhook/${account.id}/${account.webhookSecret}`;
+    await this.evolution.setWebhook(creds, url).catch((err: Error) =>
+      this.logger.warn(`setWebhook: ${err.message}`),
+    );
   }
 
   // ---------- outbound (porta) ----------

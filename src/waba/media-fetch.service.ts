@@ -28,6 +28,10 @@ export interface MediaRef {
   fixtureName?: string | null;
   /** Evolution: id da mensagem (key.id) para getBase64FromMediaMessage. */
   messageId?: string | null;
+  fromMe?: boolean;
+  remoteJid?: string | null;
+  /** Bytes do webhook (base64) — STT não espera getBase64. */
+  inlineBase64?: string | null;
   attempts?: number;
 }
 
@@ -61,6 +65,16 @@ export class MediaFetchService {
     owner: MediaOwner,
     ref: MediaRef,
   ): Promise<{ data: Buffer; contentType: string }> {
+    if (ref.inlineBase64) {
+      const data = Buffer.from(ref.inlineBase64, 'base64');
+      if (data.length > 0) {
+        return {
+          data,
+          contentType:
+            ref.mimeType?.split(';')[0]?.trim() || 'audio/ogg',
+        };
+      }
+    }
     if (ref.vendor === 'fixture') return this.downloadFixture(ref);
     if (ref.vendor === 'twilio') return this.downloadTwilio(owner, ref);
     if (ref.vendor === 'mailgun') return this.downloadMailgun(owner, ref);
@@ -167,16 +181,29 @@ export class MediaFetchService {
       owner.conversation.channelEndpoint?.channelAccount.credentialsEncrypted,
     );
     if (!creds) throw new Error('evolution mediaRef without session credentials');
-    const { data, mimetype } = await this.evolution.mediaBase64(
-      creds,
-      ref.messageId,
-    );
-    return {
-      data,
-      contentType:
-        mimetype?.split(';')[0]?.trim() ||
-        ref.mimeType?.split(';')[0]?.trim() ||
-        'application/octet-stream',
-    };
+    let last: Error | undefined;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const { data, mimetype } = await this.evolution.mediaBase64(
+          creds,
+          ref.messageId,
+          { fromMe: ref.fromMe, remoteJid: ref.remoteJid },
+        );
+        if (!data.length) throw new Error('Evolution devolveu áudio vazio');
+        return {
+          data,
+          contentType:
+            mimetype?.split(';')[0]?.trim() ||
+            ref.mimeType?.split(';')[0]?.trim() ||
+            'application/octet-stream',
+        };
+      } catch (err) {
+        last = err as Error;
+        if (attempt < 4) {
+          await new Promise((r) => setTimeout(r, 1500 * attempt));
+        }
+      }
+    }
+    throw last ?? new Error('Evolution getBase64 falhou');
   }
 }

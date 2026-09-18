@@ -40,6 +40,8 @@ interface EvolutionMessage {
   viewOnceMessage?: { message?: EvolutionMessage };
   viewOnceMessageV2?: { message?: EvolutionMessage };
   viewOnceMessageV2Extension?: { message?: EvolutionMessage };
+  /** Presente quando o webhook da instância tem `base64: true`. */
+  base64?: string;
 }
 
 export function evolutionEvent(p: EvolutionWebhook): 'message' | 'connected' | 'disconnected' | 'other' {
@@ -82,6 +84,7 @@ export function evolutionToInbound(
 
   const media = pickMedia(msg);
   if (media) {
+    const inline = inlineBase64(p.data?.message);
     return {
       ...base,
       type: media.type,
@@ -91,11 +94,22 @@ export function evolutionToInbound(
         messageId: key.id,
         mimeType: media.mimeType ?? null,
         filename: media.filename ?? null,
+        fromMe: Boolean(key.fromMe),
+        remoteJid: key.remoteJid ?? null,
         attempts: 0,
+        ...(inline ? { inlineBase64: inline } : {}),
       } satisfies Prisma.JsonObject,
     };
   }
   return { ...base, type: 'OTHER', body: null };
+}
+
+const MAX_INLINE_B64 = 2_500_000;
+
+function inlineBase64(message: EvolutionMessage | undefined): string | undefined {
+  const raw = message?.base64?.trim();
+  if (!raw || raw.length > MAX_INLINE_B64) return undefined;
+  return raw.replace(/^data:[^;]+;base64,/, '');
 }
 
 /** Dígitos E.164 do peer; null para grupo/status/newsletter ou LID sem alternativa. */

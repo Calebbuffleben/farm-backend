@@ -261,10 +261,25 @@ export class InternalController {
     }
 
     const ref = (message.mediaRef ?? {}) as MediaRef;
-    const downloaded = await this.mediaFetch.download(message, ref);
-    res.setHeader('Content-Type', downloaded.contentType);
-    res.setHeader('Content-Length', String(downloaded.data.length));
-    res.send(downloaded.data);
+    try {
+      const downloaded = await this.mediaFetch.download(message, ref);
+      this.logger.log(
+        `media bytes message=${messageId} n=${downloaded.data.length} type=${downloaded.contentType}`,
+      );
+      res.setHeader('Content-Type', downloaded.contentType);
+      res.setHeader('Content-Length', String(downloaded.data.length));
+      res.send(downloaded.data);
+    } catch (err) {
+      this.logger.error(
+        `media fetch message=${messageId}: ${(err as Error).message}`,
+      );
+      if (!res.headersSent) {
+        res.status(502).json({
+          statusCode: 502,
+          message: (err as Error).message,
+        });
+      }
+    }
   }
 
   /** Mídia para STT — o worker não precisa de credenciais do object storage. */
