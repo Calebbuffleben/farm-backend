@@ -58,9 +58,12 @@ export class InboxController {
 
   @Get('conversations')
   @SkipThrottle()
-  async listConversations(@CurrentUser() user: TenantContext | undefined) {
+  async listConversations(
+    @CurrentUser() user: TenantContext | undefined,
+    @Query('rtvUserId') rtvUserId?: string,
+  ) {
     if (!user) throw new UnauthorizedException();
-    return this.inbox.listConversations(user);
+    return this.inbox.listConversations(user, rtvUserId);
   }
 
   /** Card de Bordo do RTV: situação do negócio escrita pela IA. `{ brief: null }` = ainda sem análise. */

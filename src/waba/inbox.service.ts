@@ -135,16 +135,18 @@ export class InboxService {
     private readonly consent: ConsentService,
   ) {}
 
-  private numberScope(user: TenantContext) {
-    return ADMIN_ROLES.has(user.role)
-      ? {}
-      : { channelEndpoint: { assignedUserId: user.userId } };
+  private numberScope(user: TenantContext, rtvUserId?: string) {
+    if (!ADMIN_ROLES.has(user.role)) {
+      return { channelEndpoint: { assignedUserId: user.userId } };
+    }
+    const id = rtvUserId?.trim();
+    return id ? { channelEndpoint: { assignedUserId: id } } : {};
   }
 
-  async listConversations(user: TenantContext) {
+  async listConversations(user: TenantContext, rtvUserId?: string) {
     const now = new Date();
     const conversations = await this.prisma.conversation.findMany({
-      where: { tenantId: user.tenantId, ...this.numberScope(user) },
+      where: { tenantId: user.tenantId, ...this.numberScope(user, rtvUserId) },
       orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }],
       take: 100,
       include: {
@@ -155,6 +157,7 @@ export class InboxService {
           select: {
             id: true,
             displayAddress: true,
+            assignedUser: { select: { id: true, name: true, email: true } },
             channelAccount: { select: { kind: true } },
           },
         },
@@ -182,6 +185,7 @@ export class InboxService {
           c.wabaNumber?.displayNumber ?? c.channelEndpoint.displayAddress,
       },
       channelKind: c.channelEndpoint.channelAccount.kind,
+      assignedUser: c.channelEndpoint.assignedUser,
       emailSubject: c.emailSubject,
       lastMessageAt: c.lastMessageAt,
       lastMessage: c.messages[0] ?? null,
