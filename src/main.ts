@@ -36,6 +36,12 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log'],
   });
 
+  // Default do body-parser é 100kb. Webhook da Evolution com base64:true
+  // (áudio/imagem + legenda) passa disso — sem isto: PayloadTooLargeError.
+  // useBodyParser ANTES de listen() substitui o parser padrão (Nest 11).
+  const jsonBodyLimit = process.env.JSON_BODY_LIMIT?.trim() || '12mb';
+  app.useBodyParser('json', { limit: jsonBodyLimit });
+
   // TLS termina no proxy; sem isto req.protocol vira http e a Twilio
   // assina https — HMAC quebra se FARM_PUBLIC_URL não estiver setada.
   app.set('trust proxy', 1);
@@ -87,7 +93,7 @@ async function bootstrap() {
 
   // gRPC de ingestão de fatos (farm/intelligence → backend) entra na Fase 3,
   // no mesmo padrão do PublishFeedback do Meet (SERVICE JWT + x-tenant-id).
-  console.log('[bootstrap] ready | PORT=%s', port);
+  console.log('[bootstrap] ready | PORT=%s JSON_BODY_LIMIT=%s', port, jsonBodyLimit);
 }
 bootstrap().catch((err) => {
   console.error('[bootstrap] fatal', err);
