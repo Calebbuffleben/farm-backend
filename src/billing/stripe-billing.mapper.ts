@@ -1,6 +1,7 @@
 import { Plan, SubscriptionStatus } from '@prisma/client';
 
-import { planToMaxUsers } from './plan-limits';
+import { assertPublicPriceIds, collectPublicPriceIds } from './billing-env';
+import { isPublicPlan, planToMaxUsers, type PublicPlan } from './plan-limits';
 
 export type StripeSubLike = {
   id: string;
@@ -10,6 +11,7 @@ export type StripeSubLike = {
   current_period_end?: number | null;
   items?: {
     data?: Array<{
+      id?: string | null;
       current_period_end?: number | null;
       price?: { id?: string | null } | null;
     }>;
@@ -17,20 +19,19 @@ export type StripeSubLike = {
 };
 
 export function planToPriceId(plan: Plan): string {
-  const key = plan === Plan.ENTERPRISE ? 'STRIPE_PRICE_ENTERPRISE' : 'STRIPE_PRICE_PRO';
-  const id = process.env[key]?.trim();
-  if (!id) {
-    throw new Error(`${key} is not configured`);
+  if (!isPublicPlan(plan)) {
+    throw new Error(`Plan ${plan} has no public Stripe price`);
   }
-  return id;
+  assertPublicPriceIds();
+  return collectPublicPriceIds()[plan];
 }
 
 export function priceIdToPlan(priceId: string | null | undefined): Plan | null {
   if (!priceId) return null;
-  const pro = process.env.STRIPE_PRICE_PRO?.trim();
-  const ent = process.env.STRIPE_PRICE_ENTERPRISE?.trim();
-  if (pro && priceId === pro) return Plan.PRO;
-  if (ent && priceId === ent) return Plan.ENTERPRISE;
+  const ids = collectPublicPriceIds();
+  for (const plan of Object.keys(ids) as PublicPlan[]) {
+    if (ids[plan] && priceId === ids[plan]) return plan;
+  }
   return null;
 }
 
@@ -60,6 +61,10 @@ export function customerIdOf(sub: StripeSubLike): string | null {
 
 export function priceIdOf(sub: StripeSubLike): string | null {
   return sub.items?.data?.[0]?.price?.id ?? null;
+}
+
+export function itemIdOf(sub: StripeSubLike): string | null {
+  return sub.items?.data?.[0]?.id ?? null;
 }
 
 export function periodEndOf(sub: StripeSubLike): Date | null {

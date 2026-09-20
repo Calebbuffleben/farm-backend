@@ -2,8 +2,6 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
-  HttpException,
-  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -14,7 +12,6 @@ import {
   InviteStatus,
   MembershipRole,
   SubscriptionStatus,
-  Plan,
 } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,9 +19,12 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 import { ARGON2_OPTIONS } from '../auth/auth.constants';
 import { AuthService } from '../auth/auth.service';
 import type { AuthSession } from '../auth/auth.service';
-import { planToMaxUsers } from '../billing/plan-limits';
 import { denyIfNotEntitled } from '../billing/entitlement';
+import { SeatCapacityService } from '../billing/seat-capacity.service';
+import { SeatLimitReachedException } from '../billing/seat-limit.exception';
 import { inviteAcceptUrl } from './invite-url';
+
+export { SeatLimitReachedException };
 
 interface RequestMeta {
   ip?: string;
@@ -48,24 +48,6 @@ export interface CreatedInvitation extends InvitationSummary {
   token: string;
 }
 
-/**
- * HTTP 402 Payment Required — used to surface seat-limit exhaustion back
- * to the client. The frontend keys on this status to render the upgrade CTA.
- */
-export class SeatLimitReachedException extends HttpException {
-  constructor(message: string, public readonly detail: Record<string, unknown>) {
-    super(
-      {
-        statusCode: HttpStatus.PAYMENT_REQUIRED,
-        error: 'SeatLimitReached',
-        message,
-        ...detail,
-      },
-      HttpStatus.PAYMENT_REQUIRED,
-    );
-  }
-}
-
 @Injectable()
 export class InvitationsService {
   private readonly logger = new Logger(InvitationsService.name);
@@ -74,6 +56,7 @@ export class InvitationsService {
     private readonly prisma: PrismaService,
     private readonly tenantCtx: TenantContextService,
     private readonly auth: AuthService,
+    private readonly seats: SeatCapacityService,
   ) {}
 
   /**
@@ -103,110 +86,93 @@ export class InvitationsService {
     }
 
     return this.tenantCtx.runWithTenantBypass(async () => {
-      const sub = await this.prisma.subscription.findUnique({
-        where: { tenantId },
-      });
-      if (!sub) {
-        throw new NotFoundException('Subscription missing for tenant');
-      }
-      if (sub.status === SubscriptionStatus.CANCELED) {
-        throw new ForbiddenException(
-          'Subscription canceled — upgrade to invite members again',
-        );
-      }
+      return this.prisma.$transaction(async (tx) => {
+        await this.seats.lockTenant(tx, tenantId);
+        const sub = await tx.subscription.findUnique({
+          where: { tenantId },
+        });
+        if (!sub) {
+          throw new NotFoundException('Subscription missing for tenant');
+        }
+        if (sub.status === SubscriptionStatus.CANCELED) {
+          throw new ForbiddenException(
+            'Subscription canceled — upgrade to invite members again',
+          );
+        }
 
-      // Already a member?
-      const existingUser = await this.prisma.user.findUnique({
-        where: { email: normalizedEmail },
-      });
-      if (existingUser) {
-        const existingMembership = await this.prisma.membership.findUnique({
+        const existingUser = await tx.user.findUnique({
+          where: { email: normalizedEmail },
+        });
+        if (existingUser) {
+          const existingMembership = await tx.membership.findUnique({
+            where: {
+              userId_tenantId: { userId: existingUser.id, tenantId },
+            },
+          });
+          if (existingMembership) {
+            throw new ConflictException('User is already a member of this tenant');
+          }
+        }
+
+        const existingInvite = await tx.invitation.findFirst({
           where: {
-            userId_tenantId: { userId: existingUser.id, tenantId },
+            tenantId,
+            email: normalizedEmail,
+            status: InviteStatus.PENDING,
           },
         });
-        if (existingMembership) {
-          throw new ConflictException('User is already a member of this tenant');
+        if (existingInvite) {
+          throw new ConflictException(
+            'A pending invitation already exists for this email',
+          );
         }
-      }
 
-      // Any PENDING invite already out for this email?
-      const existingInvite = await this.prisma.invitation.findFirst({
-        where: {
-          tenantId,
-          email: normalizedEmail,
-          status: InviteStatus.PENDING,
-        },
-      });
-      if (existingInvite) {
-        throw new ConflictException(
-          'A pending invitation already exists for this email',
-        );
-      }
+        await this.seats.assertCanAddSeat(tenantId, tx);
 
-      const [memberCount, pendingInvites] = await Promise.all([
-        this.prisma.membership.count({ where: { tenantId } }),
-        this.prisma.invitation.count({
-          where: { tenantId, status: InviteStatus.PENDING },
-        }),
-      ]);
-      const seatsUsed = memberCount + pendingInvites;
-      if (seatsUsed >= sub.maxUsers) {
-        throw new SeatLimitReachedException(
-          `Seat limit reached (${seatsUsed}/${sub.maxUsers}). Upgrade your plan to invite more members.`,
-          {
-            plan: sub.plan,
-            maxUsers: sub.maxUsers,
-            memberCount,
-            pendingInvites,
-            seatsUsed,
-          },
-        );
-      }
+        const tokenPlain = generateInvitationToken();
+        const tokenHash = hashToken(tokenPlain);
+        const expiresAt = new Date(Date.now() + DEFAULT_INVITE_TTL_MS);
 
-      const tokenPlain = generateInvitationToken();
-      const tokenHash = hashToken(tokenPlain);
-      const expiresAt = new Date(Date.now() + DEFAULT_INVITE_TTL_MS);
-
-      const created = await this.prisma.invitation.create({
-        data: {
-          tenantId,
-          email: normalizedEmail,
-          role,
-          tokenHash,
-          invitedById: actorUserId,
-          status: InviteStatus.PENDING,
-          expiresAt,
-        },
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          tenantId,
-          userId: actorUserId,
-          action: 'invite.sent',
-          target: `invitation:${created.id}`,
-          ip: meta.ip ?? null,
-          userAgent: meta.userAgent ?? null,
-          metadata: {
+        const created = await tx.invitation.create({
+          data: {
+            tenantId,
             email: normalizedEmail,
             role,
-            invitedByMembershipId: actorMembershipId,
-          } as any,
-        },
-      });
+            tokenHash,
+            invitedById: actorUserId,
+            status: InviteStatus.PENDING,
+            expiresAt,
+          },
+        });
 
-      return {
-        id: created.id,
-        email: created.email,
-        role: created.role,
-        status: created.status,
-        expiresAt: created.expiresAt,
-        createdAt: created.createdAt,
-        invitedById: created.invitedById,
-        token: tokenPlain,
-        inviteUrl: inviteAcceptUrl(tokenPlain),
-      };
+        await tx.auditLog.create({
+          data: {
+            tenantId,
+            userId: actorUserId,
+            action: 'invite.sent',
+            target: `invitation:${created.id}`,
+            ip: meta.ip ?? null,
+            userAgent: meta.userAgent ?? null,
+            metadata: {
+              email: normalizedEmail,
+              role,
+              invitedByMembershipId: actorMembershipId,
+            },
+          },
+        });
+
+        return {
+          id: created.id,
+          email: created.email,
+          role: created.role,
+          status: created.status,
+          expiresAt: created.expiresAt,
+          createdAt: created.createdAt,
+          invitedById: created.invitedById,
+          token: tokenPlain,
+          inviteUrl: inviteAcceptUrl(tokenPlain),
+        };
+      });
     });
   }
 
@@ -386,107 +352,107 @@ export class InvitationsService {
     role: MembershipRole;
   }> {
     return this.tenantCtx.runWithTenantBypass(async () => {
-      // Re-fetch atomically to close races (2 accepts in parallel, limit change, etc.)
-      const invite = await this.prisma.invitation.findUnique({
-        where: { id: invitationId },
-      });
-      if (!invite || invite.status !== InviteStatus.PENDING) {
-        throw new NotFoundException('Invitation not found or no longer valid');
-      }
-
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: invite.tenantId },
-      });
-      if (!tenant) {
-        throw new NotFoundException('Tenant not found');
-      }
-
-      const sub = await this.prisma.subscription.findUnique({
-        where: { tenantId: invite.tenantId },
-      });
-      denyIfNotEntitled(sub?.plan, sub?.status);
-      // Re-check the seat limit at accept-time (admin may have downgraded,
-      // or someone else accepted in parallel).
-      const memberCount = await this.prisma.membership.count({
-        where: { tenantId: invite.tenantId },
-      });
-      const maxUsers = sub?.maxUsers ?? planToMaxUsers(Plan.FREE);
-      if (memberCount >= maxUsers) {
-        await this.prisma.invitation.update({
-          where: { id: invite.id },
-          data: { status: InviteStatus.EXPIRED },
+      return this.prisma.$transaction(async (tx) => {
+        const invite = await tx.invitation.findUnique({
+          where: { id: invitationId },
         });
-        await this.writeInviteAudit(
-          invite.tenantId,
-          userId,
-          'invite.accept.seat_limit',
-          invite.id,
-          meta,
-          { memberCount, maxUsers },
-        );
-        throw new SeatLimitReachedException(
-          `Seat limit reached (${memberCount}/${maxUsers}). Ask an admin to upgrade the plan.`,
-          {
-            plan: sub?.plan ?? Plan.FREE,
-            maxUsers,
-            memberCount,
-          },
-        );
-      }
+        if (!invite || invite.status !== InviteStatus.PENDING) {
+          throw new NotFoundException('Invitation not found or no longer valid');
+        }
 
-      // Defend against idempotency: duplicate membership => just mark
-      // the invite accepted and return the existing row.
-      const existingMembership = await this.prisma.membership.findUnique({
-        where: { userId_tenantId: { userId, tenantId: invite.tenantId } },
-      });
-      let membershipId: string;
-      let role: MembershipRole;
-      if (existingMembership) {
-        membershipId = existingMembership.id;
-        role = existingMembership.role;
-      } else {
-        // Find the inviter's membership for bookkeeping (platform bootstrap
-        // invites may have no inviter user).
-        const inviterMembership = invite.invitedById
-          ? await this.prisma.membership.findFirst({
-              where: {
-                userId: invite.invitedById,
-                tenantId: invite.tenantId,
+        await this.seats.lockTenant(tx, invite.tenantId);
+
+        const tenant = await tx.tenant.findUnique({
+          where: { id: invite.tenantId },
+        });
+        if (!tenant) {
+          throw new NotFoundException('Tenant not found');
+        }
+
+        const cap = await this.seats.snapshot(invite.tenantId, tx);
+        denyIfNotEntitled(cap.plan, cap.status, cap.currentPeriodEnd);
+        if (cap.memberCount >= cap.effectiveMaxUsers) {
+          await tx.invitation.update({
+            where: { id: invite.id },
+            data: { status: InviteStatus.EXPIRED },
+          });
+          await tx.auditLog.create({
+            data: {
+              tenantId: invite.tenantId,
+              userId,
+              action: 'invite.accept.seat_limit',
+              target: `invitation:${invite.id}`,
+              ip: meta.ip ?? null,
+              userAgent: meta.userAgent ?? null,
+              metadata: {
+                memberCount: cap.memberCount,
+                maxUsers: cap.effectiveMaxUsers,
               },
-            })
-          : null;
-        const created = await this.prisma.membership.create({
+            },
+          });
+          throw new SeatLimitReachedException(
+            `Seat limit reached (${cap.memberCount}/${cap.effectiveMaxUsers}). Ask an admin to upgrade the plan.`,
+            {
+              plan: cap.plan,
+              maxUsers: cap.effectiveMaxUsers,
+              memberCount: cap.memberCount,
+            },
+          );
+        }
+
+        const existingMembership = await tx.membership.findUnique({
+          where: { userId_tenantId: { userId, tenantId: invite.tenantId } },
+        });
+        let membershipId: string;
+        let role: MembershipRole;
+        if (existingMembership) {
+          membershipId = existingMembership.id;
+          role = existingMembership.role;
+        } else {
+          const inviterMembership = invite.invitedById
+            ? await tx.membership.findFirst({
+                where: {
+                  userId: invite.invitedById,
+                  tenantId: invite.tenantId,
+                },
+              })
+            : null;
+          const created = await tx.membership.create({
+            data: {
+              userId,
+              tenantId: invite.tenantId,
+              role: invite.role,
+              invitedBy: inviterMembership?.id ?? null,
+            },
+          });
+          membershipId = created.id;
+          role = created.role;
+        }
+
+        await tx.invitation.update({
+          where: { id: invite.id },
+          data: { status: InviteStatus.ACCEPTED, acceptedAt: new Date() },
+        });
+
+        await tx.auditLog.create({
           data: {
-            userId,
             tenantId: invite.tenantId,
-            role: invite.role,
-            invitedBy: inviterMembership?.id ?? null,
+            userId,
+            action: 'invite.accepted',
+            target: `invitation:${invite.id}`,
+            ip: meta.ip ?? null,
+            userAgent: meta.userAgent ?? null,
+            metadata: { membershipId, role },
           },
         });
-        membershipId = created.id;
-        role = created.role;
-      }
 
-      await this.prisma.invitation.update({
-        where: { id: invite.id },
-        data: { status: InviteStatus.ACCEPTED, acceptedAt: new Date() },
+        return {
+          membershipId,
+          tenantId: tenant.id,
+          tenantSlug: tenant.slug,
+          role,
+        };
       });
-
-      await this.writeInviteAudit(
-        invite.tenantId,
-        userId,
-        'invite.accepted',
-        invite.id,
-        meta,
-        { membershipId, role },
-      );
-
-      return {
-        membershipId,
-        tenantId: tenant.id,
-        tenantSlug: tenant.slug,
-        role,
-      };
     });
   }
 

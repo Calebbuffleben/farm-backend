@@ -17,6 +17,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { planToMaxUsers } from '../billing/plan-limits';
+import { SeatCapacityService } from '../billing/seat-capacity.service';
+import { InvitationsService } from '../invitations/invitations.service';
 import { inviteAcceptUrl } from '../invitations/invite-url';
 import {
   CreatePlatformInvitationDto,
@@ -36,6 +38,8 @@ export class PlatformAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantCtx: TenantContextService,
+    private readonly seats: SeatCapacityService,
+    private readonly invitations: InvitationsService,
   ) {}
 
   listTenants(query: TenantListQueryDto) {
@@ -107,6 +111,11 @@ export class PlatformAdminService {
         throw new BadRequestException('Tenant slug already taken');
       }
       const plan = dto.plan ?? Plan.FREE;
+      const planMax = planToMaxUsers(plan);
+      const maxUsers =
+        plan === Plan.ENTERPRISE && dto.maxUsers
+          ? Math.max(dto.maxUsers, planMax)
+          : planMax;
       const tenant = await this.prisma.tenant.create({
         data: {
           slug,
@@ -115,7 +124,7 @@ export class PlatformAdminService {
           subscription: {
             create: {
               plan,
-              maxUsers: planToMaxUsers(plan),
+              maxUsers,
               status: SubscriptionStatus.ACTIVE,
             },
           },
@@ -280,20 +289,18 @@ export class PlatformAdminService {
       const nextMaxUsers = dto.plan
         ? (dto.maxUsers ?? planMax)
         : (dto.maxUsers ?? tenant.subscription.maxUsers);
-      if (nextMaxUsers < planMax) {
+      if (nextMaxUsers < planMax && nextPlan !== Plan.ENTERPRISE) {
         throw new BadRequestException(
           `maxUsers cannot be below plan default (${planMax})`,
         );
       }
-
-      const memberCount = await this.prisma.membership.count({
-        where: { tenantId: id },
-      });
-      if (memberCount > nextMaxUsers) {
+      if (nextPlan === Plan.ENTERPRISE && nextMaxUsers < planMax) {
         throw new BadRequestException(
-          `Cannot set maxUsers to ${nextMaxUsers}: ${memberCount} members already enrolled`,
+          `Enterprise maxUsers cannot be below ${planMax}`,
         );
       }
+
+      await this.seats.assertFitsMaxUsers(id, nextMaxUsers);
 
       const updated = await this.prisma.subscription.update({
         where: { tenantId: id },
@@ -433,10 +440,6 @@ export class PlatformAdminService {
 
   createInvite(tenantId: string, dto: CreatePlatformInvitationDto) {
     return this.tenantCtx.runWithTenantBypass(async () => {
-      const normalizedEmail = dto.email.trim().toLowerCase();
-      if (!normalizedEmail.includes('@')) {
-        throw new BadRequestException('Invalid email');
-      }
       const inviter = await this.prisma.membership.findFirst({
         where: { tenantId, role: { in: [MembershipRole.OWNER, MembershipRole.ADMIN] } },
         orderBy: { createdAt: 'asc' },
@@ -444,26 +447,14 @@ export class PlatformAdminService {
       if (!inviter) {
         throw new NotFoundException('Tenant has no admin member to own invite');
       }
-      const token = randomBytes(32).toString('base64url');
-      const invite = await this.prisma.invitation.create({
-        data: {
-          tenantId,
-          email: normalizedEmail,
-          role: dto.role ?? MembershipRole.MEMBER,
-          tokenHash: createHash('sha256').update(token).digest('hex'),
-          invitedById: inviter.userId,
-          expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-        },
-      });
-      await this.prisma.auditLog.create({
-        data: {
-          tenantId,
-          action: 'platform.invite.created',
-          target: invite.id,
-          metadata: { email: normalizedEmail, role: invite.role },
-        },
-      });
-      return { ...invite, token, inviteUrl: inviteAcceptUrl(token) };
+      return this.invitations.create(
+        tenantId,
+        inviter.userId,
+        inviter.id,
+        dto.email,
+        dto.role ?? MembershipRole.MEMBER,
+        {},
+      );
     });
   }
 

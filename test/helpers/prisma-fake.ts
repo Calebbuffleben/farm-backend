@@ -63,7 +63,7 @@ interface InvitationRow {
 interface SubscriptionRow {
   id: Id;
   tenantId: Id;
-  plan: 'FREE' | 'PRO' | 'ENTERPRISE';
+  plan: 'FREE' | 'STARTER' | 'GROWTH' | 'SCALE' | 'ENTERPRISE';
   maxUsers: number;
   status: 'ACTIVE' | 'CANCELED' | 'PAST_DUE';
   stripeCustomerId: string | null;
@@ -71,6 +71,9 @@ interface SubscriptionRow {
   stripePriceId: string | null;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  pendingPlan: 'FREE' | 'STARTER' | 'GROWTH' | 'SCALE' | 'ENTERPRISE' | null;
+  pendingMaxUsers: number | null;
+  seatLimitHoldReason: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -212,6 +215,9 @@ export function createInMemoryPrismaFake() {
     async $transaction(fn: (tx: typeof api) => Promise<unknown>) {
       return fn(api);
     },
+    async $queryRaw() {
+      return [];
+    },
 
     // -------------------------- Tenant -------------------------------- //
     tenant: {
@@ -300,6 +306,19 @@ export function createInMemoryPrismaFake() {
       async count({ where }: any) {
         return memberships.filter((m) => matchWhere(m, where)).length;
       },
+      async groupBy({ by, where }: any) {
+        const rows = memberships.filter((m) => matchWhere(m, where));
+        const map = new Map<string, number>();
+        const key = by?.[0] ?? 'tenantId';
+        for (const r of rows) {
+          const id = String((r as any)[key]);
+          map.set(id, (map.get(id) ?? 0) + 1);
+        }
+        return [...map.entries()].map(([tenantId, n]) => ({
+          tenantId,
+          _count: { _all: n },
+        }));
+      },
       async create({ data, include }: any) {
         const row: MembershipRow = {
           id: uid('mbr_'),
@@ -354,6 +373,19 @@ export function createInMemoryPrismaFake() {
       async count({ where }: any) {
         return invitations.filter((i) => matchWhere(i, where)).length;
       },
+      async groupBy({ by, where }: any) {
+        const rows = invitations.filter((i) => matchWhere(i, where));
+        const map = new Map<string, number>();
+        const key = by?.[0] ?? 'tenantId';
+        for (const r of rows) {
+          const id = String((r as any)[key]);
+          map.set(id, (map.get(id) ?? 0) + 1);
+        }
+        return [...map.entries()].map(([tenantId, n]) => ({
+          tenantId,
+          _count: { _all: n },
+        }));
+      },
       async create({ data }: any) {
         const row: InvitationRow = {
           id: uid('inv_'),
@@ -397,6 +429,9 @@ export function createInMemoryPrismaFake() {
           stripePriceId: data.stripePriceId ?? null,
           currentPeriodEnd: data.currentPeriodEnd ?? null,
           cancelAtPeriodEnd: data.cancelAtPeriodEnd ?? false,
+          pendingPlan: data.pendingPlan ?? null,
+          pendingMaxUsers: data.pendingMaxUsers ?? null,
+          seatLimitHoldReason: data.seatLimitHoldReason ?? null,
           createdAt: new Date(),
           updatedAt: new Date(),
         };

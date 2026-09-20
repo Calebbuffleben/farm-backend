@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,7 +8,9 @@ import { Plan, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { entitlementEnforced, isEntitled } from './entitlement';
-import { planToMaxUsers } from './plan-limits';
+import { isPublicPlan, planToMaxUsers } from './plan-limits';
+import { SeatCapacityService } from './seat-capacity.service';
+import { SeatLimitReachedException } from './seat-limit.exception';
 
 interface RequestMeta {
   ip?: string;
@@ -22,10 +23,16 @@ export interface SubscriptionSnapshot {
   status: SubscriptionStatus;
   memberCount: number;
   pendingInvites: number;
+  seatsUsed: number;
   seatsRemaining: number;
   entitled: boolean;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd: Date | null;
+  pendingPlan: Plan | null;
+  pendingMaxUsers: number | null;
+  hasStripeCustomer: boolean;
+  stripeLinked: boolean;
+  seatLimitHoldReason: string | null;
   updatedAt: Date;
 }
 
@@ -34,43 +41,16 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantCtx: TenantContextService,
+    private readonly seats: SeatCapacityService,
   ) {}
 
-  /**
-   * Load the current tenant subscription + live seat usage. Auto-creates a
-   * FREE plan row if the tenant was somehow bootstrapped without one
-   * (defensive — registration always creates a subscription).
-   */
   async getSubscription(tenantId: string): Promise<SubscriptionSnapshot> {
-    let sub = await this.prisma.subscription.findUnique({
-      where: { tenantId },
-    });
-    if (!sub) {
-      // Defensive: recreate missing subscription as FREE.
-      sub = await this.prisma.subscription.create({
-        data: {
-          tenantId,
-          plan: Plan.FREE,
-          maxUsers: planToMaxUsers(Plan.FREE),
-          status: SubscriptionStatus.ACTIVE,
-        },
-      });
-    }
-
-    const [memberCount, pendingInvites] = await Promise.all([
-      this.prisma.membership.count({ where: { tenantId } }),
-      this.prisma.invitation.count({
-        where: { tenantId, status: 'PENDING' },
-      }),
-    ]);
-
-    return toSnapshot(sub, memberCount, pendingInvites);
+    const cap = await this.seats.snapshot(tenantId);
+    return toSnapshot(cap);
   }
 
   /**
-   * Upgrade (or downgrade) the tenant's plan. Hard-coded plan→seat map.
-   * Downgrades that would put `memberCount > maxUsers` are rejected —
-   * admin must remove members first.
+   * Local plan switch (dev / ALLOW_FREE_PLAN_SWITCH). Production uses Stripe.
    */
   async changePlan(
     tenantId: string,
@@ -78,6 +58,9 @@ export class BillingService {
     plan: Plan,
     meta: RequestMeta,
   ): Promise<SubscriptionSnapshot> {
+    if (!isPublicPlan(plan) && plan !== Plan.ENTERPRISE) {
+      throw new BadRequestException(`Plan "${plan}" is not available`);
+    }
     return this.tenantCtx.runWithTenantBypass(async () => {
       const current = await this.prisma.subscription.findUnique({
         where: { tenantId },
@@ -85,17 +68,17 @@ export class BillingService {
       if (!current) {
         throw new NotFoundException('Subscription not found for tenant');
       }
-      if (!Object.values(Plan).includes(plan)) {
-        throw new BadRequestException(`Unknown plan "${plan}"`);
-      }
-      const newMax = planToMaxUsers(plan);
-      const memberCount = await this.prisma.membership.count({
-        where: { tenantId },
-      });
-      if (memberCount > newMax) {
-        throw new ConflictException(
-          `Cannot switch to ${plan}: current seats used (${memberCount}) exceeds plan limit (${newMax}). Remove members first.`,
-        );
+      const newMax =
+        plan === Plan.ENTERPRISE
+          ? Math.max(current.maxUsers, planToMaxUsers(plan))
+          : planToMaxUsers(plan);
+      try {
+        await this.seats.assertFitsMaxUsers(tenantId, newMax);
+      } catch (err) {
+        if (err instanceof SeatLimitReachedException) {
+          throw err;
+        }
+        throw err;
       }
 
       const updated = await this.prisma.subscription.update({
@@ -103,11 +86,10 @@ export class BillingService {
         data: {
           plan,
           maxUsers: newMax,
-          // Upgrades always flip status back to ACTIVE. Downgrades keep status.
-          status:
-            current.status === SubscriptionStatus.ACTIVE
-              ? SubscriptionStatus.ACTIVE
-              : SubscriptionStatus.ACTIVE,
+          status: SubscriptionStatus.ACTIVE,
+          pendingPlan: null,
+          pendingMaxUsers: null,
+          seatLimitHoldReason: null,
         },
       });
 
@@ -124,41 +106,32 @@ export class BillingService {
             to: updated.plan,
             fromMax: current.maxUsers,
             toMax: updated.maxUsers,
-          } as any,
+          },
         },
       });
 
-      const pendingInvites = await this.prisma.invitation.count({
-        where: { tenantId, status: 'PENDING' },
-      });
-
-      return toSnapshot(updated, memberCount, pendingInvites);
+      return this.getSubscription(tenantId);
     });
   }
 }
 
-function toSnapshot(
-  sub: {
-    plan: Plan;
-    maxUsers: number;
-    status: SubscriptionStatus;
-    cancelAtPeriodEnd?: boolean;
-    currentPeriodEnd?: Date | null;
-    updatedAt: Date;
-  },
-  memberCount: number,
-  pendingInvites: number,
-): SubscriptionSnapshot {
+function toSnapshot(cap: Awaited<ReturnType<SeatCapacityService['snapshot']>>): SubscriptionSnapshot {
   return {
-    plan: sub.plan,
-    maxUsers: sub.maxUsers,
-    status: sub.status,
-    memberCount,
-    pendingInvites,
-    seatsRemaining: Math.max(0, sub.maxUsers - memberCount),
-    entitled: !entitlementEnforced() || isEntitled(sub.plan, sub.status),
-    cancelAtPeriodEnd: sub.cancelAtPeriodEnd ?? false,
-    currentPeriodEnd: sub.currentPeriodEnd ?? null,
-    updatedAt: sub.updatedAt,
+    plan: cap.plan,
+    maxUsers: cap.maxUsers,
+    status: cap.status,
+    memberCount: cap.memberCount,
+    pendingInvites: cap.pendingInvites,
+    seatsUsed: cap.seatsUsed,
+    seatsRemaining: cap.seatsRemaining,
+    entitled: !entitlementEnforced() || isEntitled(cap.plan, cap.status, cap.currentPeriodEnd),
+    cancelAtPeriodEnd: cap.cancelAtPeriodEnd,
+    currentPeriodEnd: cap.currentPeriodEnd,
+    pendingPlan: cap.pendingPlan,
+    pendingMaxUsers: cap.pendingMaxUsers,
+    hasStripeCustomer: Boolean(cap.stripeCustomerId),
+    stripeLinked: Boolean(cap.stripeSubscriptionId),
+    seatLimitHoldReason: cap.seatLimitHoldReason,
+    updatedAt: cap.updatedAt,
   };
 }

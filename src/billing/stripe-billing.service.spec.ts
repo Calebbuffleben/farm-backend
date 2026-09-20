@@ -2,6 +2,7 @@ import { Plan, SubscriptionStatus } from '@prisma/client';
 import { ConflictException } from '@nestjs/common';
 
 import { StripeBillingService } from './stripe-billing.service';
+import { SeatCapacityService } from './seat-capacity.service';
 import { createInMemoryPrismaFake } from '../../test/helpers/prisma-fake';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 
@@ -10,8 +11,9 @@ describe('StripeBillingService provision + apply', () => {
 
   beforeEach(() => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_fake';
-    process.env.STRIPE_PRICE_PRO = 'price_pro';
-    process.env.STRIPE_PRICE_ENTERPRISE = 'price_ent';
+    process.env.STRIPE_PRICE_STARTER = 'price_starter';
+    process.env.STRIPE_PRICE_GROWTH = 'price_growth';
+    process.env.STRIPE_PRICE_SCALE = 'price_scale';
     process.env.BILLING_SUCCESS_URL = 'https://landing.test/ok';
     process.env.BILLING_CANCEL_URL = 'https://landing.test/cancel';
     process.env.BILLING_PORTAL_RETURN_URL = 'https://landing.test/portal';
@@ -26,7 +28,8 @@ describe('StripeBillingService provision + apply', () => {
     const tenantCtx = {
       runWithTenantBypass: async <T>(fn: () => Promise<T>) => fn(),
     } as TenantContextService;
-    const svc = new StripeBillingService(prisma, tenantCtx);
+    const seats = new SeatCapacityService(prisma, tenantCtx);
+    const svc = new StripeBillingService(prisma, tenantCtx, seats);
     return { prisma, svc };
   }
 
@@ -38,7 +41,7 @@ describe('StripeBillingService provision + apply', () => {
         passwordHash: 'hash',
         tenantName: 'Acme',
         tenantSlug: 'acme',
-        plan: Plan.PRO,
+        plan: Plan.GROWTH,
         stripeCheckoutSessionId: 'cs_1',
         expiresAt: new Date(Date.now() + 60_000),
       },
@@ -52,7 +55,7 @@ describe('StripeBillingService provision + apply', () => {
           customer: 'cus_1',
           status: 'active',
           cancel_at_period_end: false,
-          items: { data: [{ price: { id: 'price_pro' } }] },
+          items: { data: [{ price: { id: 'price_growth' } }] },
         }),
       },
     } as any;
@@ -78,7 +81,7 @@ describe('StripeBillingService provision + apply', () => {
     expect(users).toHaveLength(1);
     expect(tenants).toHaveLength(1);
     expect(subs).toHaveLength(1);
-    expect(subs[0].plan).toBe(Plan.PRO);
+    expect(subs[0].plan).toBe(Plan.GROWTH);
     expect(subs[0].status).toBe(SubscriptionStatus.ACTIVE);
     expect(subs[0].stripeSubscriptionId).toBe('sub_1');
   });
@@ -99,7 +102,7 @@ describe('StripeBillingService provision + apply', () => {
         passwordHash: 'new-hash',
         tenantName: 'Acme',
         tenantSlug: 'acme',
-        plan: Plan.PRO,
+        plan: Plan.GROWTH,
         stripeCheckoutSessionId: 'cs_2',
         expiresAt: new Date(Date.now() + 60_000),
       },
@@ -110,7 +113,7 @@ describe('StripeBillingService provision + apply', () => {
           id: 'sub_2',
           customer: 'cus_2',
           status: 'active',
-          items: { data: [{ price: { id: 'price_pro' } }] },
+          items: { data: [{ price: { id: 'price_growth' } }] },
         }),
       },
     } as any;
@@ -132,7 +135,7 @@ describe('StripeBillingService provision + apply', () => {
         passwordHash: 'hash',
         tenantName: 'Acme 2',
         tenantSlug: 'acme',
-        plan: Plan.PRO,
+        plan: Plan.STARTER,
         stripeCheckoutSessionId: 'cs_3',
         expiresAt: new Date(Date.now() + 60_000),
       },
@@ -143,7 +146,7 @@ describe('StripeBillingService provision + apply', () => {
           id: 'sub_3',
           customer: 'cus_3',
           status: 'active',
-          items: { data: [{ price: { id: 'price_pro' } }] },
+          items: { data: [{ price: { id: 'price_starter' } }] },
         }),
       },
     } as any;
@@ -162,7 +165,7 @@ describe('StripeBillingService provision + apply', () => {
     await prisma.subscription.create({
       data: {
         tenantId: tenant.id,
-        plan: Plan.PRO,
+        plan: Plan.GROWTH,
         maxUsers: 10,
         status: SubscriptionStatus.ACTIVE,
         stripeSubscriptionId: 'sub_live',
@@ -172,16 +175,91 @@ describe('StripeBillingService provision + apply', () => {
       id: 'sub_live',
       status: 'past_due',
       customer: 'cus_x',
-      items: { data: [{ price: { id: 'price_pro' } }] },
+      items: { data: [{ price: { id: 'price_growth' } }] },
     });
     expect(prisma._dumpSubscriptions()[0].status).toBe(SubscriptionStatus.PAST_DUE);
+  });
+
+  it('holds seat limit when webhook tries to drop below used seats', async () => {
+    const { prisma, svc } = makeService();
+    const tenant = await prisma.tenant.create({ data: { slug: 'hold', name: 'Hold' } });
+    await prisma.subscription.create({
+      data: {
+        tenantId: tenant.id,
+        plan: Plan.GROWTH,
+        maxUsers: 10,
+        status: SubscriptionStatus.ACTIVE,
+        stripeSubscriptionId: 'sub_hold',
+        currentPeriodEnd: new Date(Date.now() + 86_400_000),
+      },
+    });
+    const owner = await prisma.user.create({
+      data: { email: 'a@h.test', passwordHash: 'x', isActive: true },
+    });
+    await prisma.membership.create({
+      data: { userId: owner.id, tenantId: tenant.id, role: 'OWNER' },
+    });
+    for (const email of ['b@h.test', 'c@h.test', 'd@h.test']) {
+      const u = await prisma.user.create({
+        data: { email, passwordHash: 'x', isActive: true },
+      });
+      await prisma.membership.create({
+        data: { userId: u.id, tenantId: tenant.id, role: 'MEMBER' },
+      });
+    }
+    await svc.applySubscriptionState({
+      id: 'sub_hold',
+      status: 'active',
+      customer: 'cus_h',
+      cancel_at_period_end: false,
+      current_period_end: Math.floor(Date.now() / 1000) + 86_400,
+      items: { data: [{ price: { id: 'price_starter' } }] },
+    });
+    const row = prisma._dumpSubscriptions()[0];
+    expect(row.plan).toBe(Plan.GROWTH);
+    expect(row.maxUsers).toBe(10);
+    expect(row.pendingPlan).toBe(Plan.STARTER);
+    expect(row.seatLimitHoldReason).toMatch(/seats in use/);
+  });
+
+  it('attaches checkout to an existing tenant', async () => {
+    const { prisma, svc } = makeService();
+    const tenant = await prisma.tenant.create({ data: { slug: 'ex', name: 'Ex' } });
+    await prisma.subscription.create({
+      data: { tenantId: tenant.id, plan: Plan.FREE, maxUsers: 3 },
+    });
+    svc.stripeClient = {
+      subscriptions: {
+        retrieve: async () => ({
+          id: 'sub_ex',
+          customer: 'cus_ex',
+          status: 'active',
+          items: { data: [{ price: { id: 'price_starter' } }] },
+        }),
+      },
+    } as any;
+    await svc.handleWebhookEvent({
+      id: 'evt_ex',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_ex',
+          subscription: 'sub_ex',
+          customer: 'cus_ex',
+          metadata: { kind: 'existing_tenant', tenantId: tenant.id, plan: Plan.STARTER },
+        },
+      },
+    } as any);
+    const row = prisma._dumpSubscriptions()[0];
+    expect(row.plan).toBe(Plan.STARTER);
+    expect(row.stripeSubscriptionId).toBe('sub_ex');
   });
 
   it('syncFromStripe rejects manual tenants', async () => {
     const { prisma, svc } = makeService();
     const tenant = await prisma.tenant.create({ data: { slug: 'm', name: 'M' } });
     await prisma.subscription.create({
-      data: { tenantId: tenant.id, plan: Plan.PRO, maxUsers: 10 },
+      data: { tenantId: tenant.id, plan: Plan.GROWTH, maxUsers: 10 },
     });
     await expect(svc.syncFromStripe(tenant.id)).rejects.toBeInstanceOf(ConflictException);
   });

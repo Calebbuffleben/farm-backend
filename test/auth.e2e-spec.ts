@@ -336,14 +336,14 @@ describe('Multi-tenant auth + membership + billing (e2e)', () => {
       .send({ email: 'four@capco.test' })
       .expect(402);
 
-    // Upgrade to PRO (=10 seats). Now there is room.
+    // Upgrade to GROWTH (=10 seats). Now there is room.
     const sub = await request(app.getHttpServer())
       .post('/billing/upgrade')
       .set(headers)
-      .send({ plan: 'PRO' })
+      .send({ plan: 'GROWTH' })
       .expect(200)
       .then((r) => r.body);
-    expect(sub.plan).toBe('PRO');
+    expect(sub.plan).toBe('GROWTH');
     expect(sub.maxUsers).toBe(10);
 
     // Now we can invite more.
@@ -392,7 +392,7 @@ describe('Multi-tenant auth + membership + billing (e2e)', () => {
     await request(app.getHttpServer())
       .post('/billing/upgrade')
       .set({ Authorization: `Bearer ${memberSession.accessToken}` })
-      .send({ plan: 'PRO' })
+      .send({ plan: 'GROWTH' })
       .expect(403);
   });
 
@@ -440,8 +440,22 @@ describe('Multi-tenant auth + membership + billing (e2e)', () => {
     expect(sub.maxUsers).toBe(3);
     expect(sub.memberCount).toBe(1);
     expect(sub.seatsRemaining).toBe(2);
-    expect(sub.planLimits.PRO).toBe(10);
-    expect(sub.planLimits.ENTERPRISE).toBe(50);
+    expect(sub.seatsUsed).toBe(1);
+    expect(sub.planLimits.GROWTH).toBe(10);
+    expect(sub.planLimits.SCALE).toBe(25);
+    expect(sub.planLimits.ENTERPRISE).toBe(25);
+  });
+
+  it('POST /billing/upgrade to SCALE sets 25 seats', async () => {
+    const owner = await registerOwner('scale-co', 'owner@scale.test');
+    const sub = await request(app.getHttpServer())
+      .post('/billing/upgrade')
+      .set(await authHeader(owner.accessToken))
+      .send({ plan: 'SCALE' })
+      .expect(200)
+      .then((r) => r.body);
+    expect(sub.plan).toBe('SCALE');
+    expect(sub.maxUsers).toBe(25);
   });
 
 });

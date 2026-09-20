@@ -171,8 +171,8 @@ export class AuthService {
         },
       });
 
-      // Bootstrap subscription. FREE plan => 3 seats. The creator (OWNER)
-      // already takes one of those seats.
+      // Bootstrap subscription. Self-signup stays on legacy FREE (not entitled
+      // once BILLING_ENFORCE_ENTITLEMENT is on). Paid tenants come from Stripe.
       await this.prisma.subscription.create({
         data: {
           tenantId: tenant.id,
@@ -289,7 +289,11 @@ export class AuthService {
       const subscription = await this.prisma.subscription.findUnique({
         where: { tenantId: tenant.id },
       });
-      denyIfNotEntitled(subscription?.plan, subscription?.status);
+      denyIfNotEntitled(
+        subscription?.plan,
+        subscription?.status,
+        subscription?.currentPeriodEnd,
+      );
 
       await this.prisma.user.update({
         where: { id: user.id },
@@ -411,7 +415,11 @@ export class AuthService {
       const refreshSub = await this.prisma.subscription.findUnique({
         where: { tenantId: tenant.id },
       });
-      denyIfNotEntitled(refreshSub?.plan, refreshSub?.status);
+      denyIfNotEntitled(
+        refreshSub?.plan,
+        refreshSub?.status,
+        refreshSub?.currentPeriodEnd,
+      );
 
       // Re-verify the membership still exists (admin may have removed the user).
       const membership = await this.prisma.membership.findUnique({
@@ -525,7 +533,11 @@ export class AuthService {
       const issueSub = await this.prisma.subscription.findUnique({
         where: { tenantId: tenant.id },
       });
-      denyIfNotEntitled(issueSub?.plan, issueSub?.status);
+      denyIfNotEntitled(
+        issueSub?.plan,
+        issueSub?.status,
+        issueSub?.currentPeriodEnd,
+      );
       const tokens = await this.issueTokens(
         {
           userId: user.id,
@@ -592,12 +604,24 @@ export class AuthService {
               status: subscription.status,
               memberCount,
               pendingInvites,
-              seatsRemaining: Math.max(0, subscription.maxUsers - memberCount),
+              seatsUsed: memberCount + pendingInvites,
+              seatsRemaining: Math.max(
+                0,
+                (subscription.pendingMaxUsers ?? subscription.maxUsers) -
+                  memberCount -
+                  pendingInvites,
+              ),
               entitled:
                 !entitlementEnforced() ||
-                isEntitled(subscription.plan, subscription.status),
+                isEntitled(
+                  subscription.plan,
+                  subscription.status,
+                  subscription.currentPeriodEnd,
+                ),
               cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
               currentPeriodEnd: subscription.currentPeriodEnd,
+              pendingPlan: subscription.pendingPlan,
+              pendingMaxUsers: subscription.pendingMaxUsers,
             }
           : null,
       };

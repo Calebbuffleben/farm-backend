@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { logBillingEnvOnBoot } from './billing/billing-env';
 import { RedisIoAdapter } from './redis-io.adapter';
 import { redisUrlFromEnv } from './redis-url';
 import * as dotenv from 'dotenv';
@@ -87,6 +88,8 @@ async function bootstrap() {
     ],
     exposedHeaders: ['X-Request-Id'],
   });
+
+  logBillingEnvOnBoot();
 
   const port = Number(process.env.PORT ?? 8080);
   await app.listen(port, '0.0.0.0');

@@ -64,6 +64,13 @@ export class CreateTenantDto {
   @IsOptional()
   @IsEnum(Plan)
   plan?: Plan;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  maxUsers?: number;
 }
 
 export class UpdateTenantDto {

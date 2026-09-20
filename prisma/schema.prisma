@@ -37,8 +37,12 @@ enum InviteStatus {
 }
 
 enum Plan {
+  /// Legado: não é mais oferecido. Tenants FREE permanecem sem entitlement
+  /// até o comercial vincular uma assinatura paga.
   FREE
-  PRO
+  STARTER
+  GROWTH
+  SCALE
   ENTERPRISE
 }
 
@@ -148,6 +152,11 @@ model Subscription {
   stripePriceId        String?
   currentPeriodEnd     DateTime?
   cancelAtPeriodEnd    Boolean            @default(false)
+  /// Downgrade agendado para o fim do ciclo (assentos atuais permanecem).
+  pendingPlan          Plan?
+  pendingMaxUsers      Int?
+  /// Webhook tentou baixar o limite abaixo do uso atual — ops precisa agir.
+  seatLimitHoldReason  String?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 

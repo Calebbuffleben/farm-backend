@@ -120,12 +120,20 @@ export class PlatformBillingService {
         }),
       ]);
       const tenantIds = rows.map((row) => row.tenantId);
-      const memberCounts = await this.prisma.membership.groupBy({
-        by: ['tenantId'],
-        where: { tenantId: { in: tenantIds } },
-        _count: { _all: true },
-      });
+      const [memberCounts, pendingCounts] = await Promise.all([
+        this.prisma.membership.groupBy({
+          by: ['tenantId'],
+          where: { tenantId: { in: tenantIds } },
+          _count: { _all: true },
+        }),
+        this.prisma.invitation.groupBy({
+          by: ['tenantId'],
+          where: { tenantId: { in: tenantIds }, status: 'PENDING' },
+          _count: { _all: true },
+        }),
+      ]);
       const countMap = new Map(memberCounts.map((c) => [c.tenantId, c._count._all]));
+      const pendingMap = new Map(pendingCounts.map((c) => [c.tenantId, c._count._all]));
       return {
         total,
         items: rows.map((row) => ({
@@ -134,6 +142,10 @@ export class PlatformBillingService {
           status: row.status,
           maxUsers: row.maxUsers,
           memberCount: countMap.get(row.tenantId) ?? 0,
+          pendingInvites: pendingMap.get(row.tenantId) ?? 0,
+          pendingPlan: row.pendingPlan,
+          pendingMaxUsers: row.pendingMaxUsers,
+          seatLimitHoldReason: row.seatLimitHoldReason,
           source: row.stripeSubscriptionId ? 'stripe' : 'manual',
           stripeCustomerId: row.stripeCustomerId,
           stripeSubscriptionId: row.stripeSubscriptionId,

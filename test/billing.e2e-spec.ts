@@ -24,8 +24,9 @@ describe('Billing HTTP (e2e)', () => {
     process.env.ALLOW_SELF_SIGNUP = 'true';
     process.env.ALLOW_FREE_PLAN_SWITCH = 'false';
     process.env.BILLING_ENFORCE_ENTITLEMENT = 'false';
-    process.env.STRIPE_PRICE_PRO = 'price_pro';
-    process.env.STRIPE_PRICE_ENTERPRISE = 'price_ent';
+    process.env.STRIPE_PRICE_STARTER = 'price_starter';
+    process.env.STRIPE_PRICE_GROWTH = 'price_growth';
+    process.env.STRIPE_PRICE_SCALE = 'price_scale';
     process.env.BILLING_SUCCESS_URL = 'https://landing.test/ok';
     process.env.BILLING_CANCEL_URL = 'https://landing.test/cancel';
 
@@ -51,10 +52,12 @@ describe('Billing HTTP (e2e)', () => {
         checkoutSuccess: async () => ({
           email: 'a@b.com',
           tenantSlug: 'acme',
-          plan: 'PRO',
-          downloads: { mac: 'https://x/mac.dmg', win: 'https://x/win.exe' },
+          plan: 'GROWTH',
         }),
         createPortalSession: async () => ({ url: 'https://billing.stripe.com/p/session' }),
+        changePaidPlan: async () => ({
+          checkoutUrl: 'https://checkout.stripe.com/c/pay/cs_upgrade',
+        }),
       })
       .compile();
 
@@ -81,22 +84,35 @@ describe('Billing HTTP (e2e)', () => {
         password: 'supersecret12',
         tenantName: 'Acme',
         tenantSlug: 'acme',
-        plan: 'PRO',
+        plan: 'GROWTH',
       });
     expect(res.status).toBe(200);
     expect(res.body.checkoutUrl).toContain('checkout.stripe.com');
   });
 
-  it('GET /billing/checkout-success returns downloads', async () => {
+  it('GET /billing/catalog lists public plans', async () => {
+    const res = await request(app.getHttpServer()).get('/billing/catalog');
+    expect(res.status).toBe(200);
+    expect(res.body.currency).toBe('BRL');
+    expect(res.body.plans.map((p: { id: string }) => p.id)).toEqual([
+      'STARTER',
+      'GROWTH',
+      'SCALE',
+      'ENTERPRISE',
+    ]);
+  });
+
+  it('GET /billing/checkout-success returns tenant + plan', async () => {
     const res = await request(app.getHttpServer()).get(
       '/billing/checkout-success?session_id=cs_test',
     );
     expect(res.status).toBe(200);
     expect(res.body.tenantSlug).toBe('acme');
-    expect(res.body.downloads.mac).toContain('mac.dmg');
+    expect(res.body.plan).toBe('GROWTH');
+    expect(res.body.downloads).toBeUndefined();
   });
 
-  it('POST /billing/upgrade is 403 when free plan switch is disabled', async () => {
+  it('POST /billing/upgrade starts Stripe checkout when local switch is disabled', async () => {
     const register = await request(app.getHttpServer()).post('/auth/register').send({
       email: 'admin@acme.com',
       password: 'supersecret12',
@@ -108,7 +124,23 @@ describe('Billing HTTP (e2e)', () => {
     const res = await request(app.getHttpServer())
       .post('/billing/upgrade')
       .set('Authorization', `Bearer ${token}`)
-      .send({ plan: 'PRO' });
-    expect(res.status).toBe(403);
+      .send({ plan: 'GROWTH' });
+    expect(res.status).toBe(200);
+    expect(res.body.checkoutUrl).toContain('checkout.stripe.com');
+  });
+
+  it('POST /billing/upgrade rejects Enterprise self-serve', async () => {
+    const register = await request(app.getHttpServer()).post('/auth/register').send({
+      email: 'ent@acme.com',
+      password: 'supersecret12',
+      tenantSlug: 'acme3',
+      tenantName: 'Acme 3',
+    });
+    expect(register.status).toBe(201);
+    const res = await request(app.getHttpServer())
+      .post('/billing/upgrade')
+      .set('Authorization', `Bearer ${register.body.accessToken}`)
+      .send({ plan: 'ENTERPRISE' });
+    expect(res.status).toBe(400);
   });
 });

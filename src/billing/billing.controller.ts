@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Headers,
   HttpCode,
@@ -23,7 +22,7 @@ import type { TenantContext } from '../tenancy/tenant-context.types';
 import { BillingService } from './billing.service';
 import { StripeBillingService } from './stripe-billing.service';
 import { CreateCheckoutSessionDto, UpgradePlanDto } from './dto/billing.dto';
-import { PLAN_MAX_USERS } from './plan-limits';
+import { catalogPayload, PLAN_MAX_USERS, isPublicPlan } from './plan-limits';
 import { freePlanSwitchAllowed } from './entitlement';
 
 @Controller('billing')
@@ -33,12 +32,19 @@ export class BillingController {
     private readonly stripeBilling: StripeBillingService,
   ) {}
 
+  @Public()
+  @Get('catalog')
+  @SkipThrottle()
+  catalog() {
+    return catalogPayload();
+  }
+
   @Get('subscription')
   @SkipThrottle()
   async subscription(@CurrentUser() user: TenantContext | undefined) {
     if (!user) throw new UnauthorizedException();
     const snapshot = await this.billing.getSubscription(user.tenantId);
-    return { ...snapshot, planLimits: PLAN_MAX_USERS };
+    return { ...snapshot, planLimits: PLAN_MAX_USERS, catalog: catalogPayload() };
   }
 
   @Post('upgrade')
@@ -50,15 +56,26 @@ export class BillingController {
     @Req() req: Request,
   ) {
     if (!user) throw new UnauthorizedException();
-    if (!freePlanSwitchAllowed()) {
-      throw new ForbiddenException(
-        'Plan changes are managed via the billing portal',
+    if (!isPublicPlan(dto.plan)) {
+      throw new BadRequestException(
+        'Enterprise is contracted with sales. Choose Starter, Growth or Scale.',
       );
     }
-    return this.billing.changePlan(user.tenantId, user.userId, dto.plan, {
+    const meta = {
       ip: readIp(req),
       userAgent: req.get?.('user-agent') ?? undefined,
-    });
+    };
+    if (freePlanSwitchAllowed()) {
+      return this.billing.changePlan(user.tenantId, user.userId, dto.plan, meta);
+    }
+    const result = await this.stripeBilling.changePaidPlan(
+      user.tenantId,
+      user.userId,
+      dto.plan,
+      meta,
+    );
+    if ('checkoutUrl' in result) return result;
+    return this.billing.getSubscription(user.tenantId);
   }
 
   @Public()
@@ -66,6 +83,11 @@ export class BillingController {
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   createCheckoutSession(@Body() dto: CreateCheckoutSessionDto) {
+    if (!isPublicPlan(dto.plan)) {
+      throw new BadRequestException(
+        'Only Starter, Growth and Scale can be purchased. Enterprise is under consultation.',
+      );
+    }
     return this.stripeBilling.createCheckoutSession(dto);
   }
 
