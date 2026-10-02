@@ -5,6 +5,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { PublishAnalysisDto } from './dto/analysis.dto';
 import { ConsentService } from '../consent/consent.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { dealTemperature } from '../dashboard/deal-temperature';
+import { shouldCaptureSnapshot } from '../dashboard/dashboard.outcome';
 
 /**
  * Aplica o resultado da análise do worker (farm/intelligence) sobre uma
@@ -213,6 +215,45 @@ export class FactsIngestService {
               : { evidenceMessageId: messageId }),
           },
         });
+        if (d.analysisQuality !== 'STALE') {
+          const temperature = dealTemperature(
+            {
+              stage: d.stage,
+              intent: d.intent,
+              urgency: d.urgency,
+              lastMessageAt: message.sentAt,
+              lastDirection: message.direction,
+            },
+            message.sentAt,
+          );
+          const previous = await tx.dealSnapshot.findFirst({
+            where: { conversationId: message.conversationId },
+            orderBy: { occurredAt: 'desc' },
+            select: { stage: true, temperature: true, blockerSubtype: true },
+          });
+          const blockerSubtype = d.blockerSubtype ?? null;
+          if (
+            shouldCaptureSnapshot(previous, {
+              stage: d.stage,
+              temperature,
+              blockerSubtype,
+            })
+          ) {
+            await tx.dealSnapshot.create({
+              data: {
+                tenantId,
+                conversationId: message.conversationId,
+                stage: d.stage,
+                temperature,
+                intent: d.intent,
+                urgency: d.urgency,
+                blockerSubtype,
+                evidenceMessageId: messageId,
+                occurredAt: message.sentAt,
+              },
+            });
+          }
+        }
       }
     });
 

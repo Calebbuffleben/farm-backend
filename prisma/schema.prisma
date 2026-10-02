@@ -78,6 +78,9 @@ model Tenant {
   commercialFacts  CommercialFact[]
   consentRecords   ConsentRecord[]
   dealBriefs       DealBrief[]
+  interventions    ManagerIntervention[]
+  dealSnapshots    DealSnapshot[]
+  dashboardVisits  DashboardVisit[]
 }
 
 model User {
@@ -101,6 +104,9 @@ model User {
   sentMessages        Message[]          @relation("MessageSender")
   resolvedUnknowns   UnknownQueueItem[] @relation("UnknownResolvedBy")
   humanEntityLinks   EntityLink[]       @relation("EntityLinkCreatedBy")
+  interventionsAssigned ManagerIntervention[] @relation("InterventionAssignee")
+  interventionsDecided  ManagerIntervention[] @relation("InterventionDecidedBy")
+  dashboardVisits       DashboardVisit[]
 }
 
 model Membership {
@@ -406,9 +412,11 @@ model Conversation {
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
-  sessions LogicalSession[]
-  messages Message[]
-  brief    DealBrief?
+  sessions      LogicalSession[]
+  messages      Message[]
+  brief         DealBrief?
+  interventions ManagerIntervention[]
+  snapshots     DealSnapshot[]
 
   @@unique([channelEndpointId, peerAddress])
   @@index([tenantId, lastMessageAt])
@@ -817,6 +825,123 @@ model DealBrief {
   @@index([tenantId, updatedAt])
 }
 
+// ---------------------------------------------------------------------------
+// Ciclo do gestor: alerta → decisão → ação observada → movimento posterior.
+// O snapshot de nascimento não é reescrito. Estados e a observação mudam.
+// Movimento não é venda atribuída.
+// ---------------------------------------------------------------------------
+
+enum InterventionTrigger {
+  MANAGER_OWNER
+  ESCALATE
+  COOLING_CLOSE
+  PRICE_OVER_AUTHORITY
+  COMPETITOR_LATE
+}
+
+enum InterventionStatus {
+  OPEN
+  ACKNOWLEDGED
+  EXECUTED
+  DISMISSED
+  EXPIRED
+}
+
+enum InterventionDecision {
+  ASSUME
+  DELEGATE
+  DISMISS
+}
+
+enum InterventionMovement {
+  FAVORABLE
+  NONE
+  UNFAVORABLE
+}
+
+model ManagerIntervention {
+  id             String               @id @default(uuid())
+  tenantId       String
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversationId String
+  conversation   Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  trigger        InterventionTrigger
+  /// Evidência que abriu o alerta. Mesma evidência não reabre depois de encerrar.
+  evidenceMessageId String?
+  stage          DealStage
+  /// Temperatura calculada no nascimento do alerta (não é coluna do brief).
+  temperature    String
+  intent         DealLevel
+  urgency        DealLevel
+  stageConfidence Float             @default(0)
+  analysisQuality AnalysisQuality   @default(COMPLETE)
+  blockerSubtype String?
+  recommendedAction String
+  recommendedKind String
+  recommendedOwner NextActionOwner  @default(RTV)
+  dueAt          DateTime?
+  managerGuidance String?
+  /// Pistas de texto. Não é R$.
+  moneyHints     Json?
+  rtvUserId      String?
+  status         InterventionStatus  @default(OPEN)
+  decision       InterventionDecision?
+  assigneeUserId String?
+  assignee       User?               @relation("InterventionAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  decidedById    String?
+  decidedBy      User?               @relation("InterventionDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt      DateTime?
+  executedAt     DateTime?
+  dismissedAt    DateTime?
+  expiredAt      DateTime?
+  /// Saída no canal depois da decisão. Fora do canal fica "não observada".
+  executionObservedAt DateTime?
+  executionMessageId  String?
+  executionChannel    ChannelKind?
+  producerRepliedAt   DateTime?
+  movement       InterventionMovement?
+  movementNote   String?
+  movementAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, conversationId, trigger])
+  @@index([tenantId, createdAt])
+}
+
+/// Histórico de estágio/temperatura. O DealBrief é uma linha só e perde a transição.
+model DealSnapshot {
+  id             String    @id @default(uuid())
+  tenantId       String
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  stage          DealStage
+  temperature    String
+  intent         DealLevel
+  urgency        DealLevel
+  blockerSubtype String?
+  evidenceMessageId String?
+  occurredAt     DateTime  @default(now())
+
+  @@index([tenantId, conversationId, occurredAt])
+  @@index([tenantId, occurredAt])
+}
+
+/// Âncora da faixa "desde a última leitura". Avança só quando a visita é nova.
+model DashboardVisit {
+  tenantId        String
+  userId          String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visitStartedAt  DateTime
+  visibleSinceAt  DateTime?
+  updatedAt       DateTime @updatedAt
+
+  @@id([tenantId, userId])
+}
+
 enum UnknownStatus {
   PENDING
   RESOLVED
@@ -867,4 +992,38 @@ model ConsentRecord {
 
   @@unique([producerId, purpose])
   @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Aquisição — pedido de demonstração (landing Google Ads). Ainda não é Tenant.
+// ---------------------------------------------------------------------------
+
+enum DemoLeadStatus {
+  NEW
+  CONTACTED
+  DISMISSED
+}
+
+model DemoLead {
+  id         String         @id @default(uuid())
+  name       String
+  company    String
+  email      String
+  phone      String
+  consentAt  DateTime
+  status     DemoLeadStatus @default(NEW)
+  utmSource  String?
+  utmMedium  String?
+  utmCampaign String?
+  utmContent String?
+  utmTerm    String?
+  gclid      String?
+  /// SHA-256 do IP; nunca o endereço cru.
+  ipHash     String?
+  userAgent  String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@index([email, createdAt])
+  @@index([status, createdAt])
 }

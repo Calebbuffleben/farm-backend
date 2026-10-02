@@ -18,6 +18,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { OpsModule } from './ops/ops.module';
 import { ConsentModule } from './consent/consent.module';
 import { WaSessionModule } from './wa-session/wa-session.module';
+import { LeadsModule } from './leads/leads.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { WaSessionModule } from './wa-session/wa-session.module';
     OpsModule,
     ConsentModule,
     WaSessionModule,
+    LeadsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -16,7 +16,9 @@ import {
   CreatePlatformInvitationDto,
   CreateTenantDto,
   InviteListQueryDto,
+  LeadListQueryDto,
   TenantListQueryDto,
+  UpdateDemoLeadDto,
   UpdateTenantBillingDto,
   UpdateTenantDto,
   UserListQueryDto,
@@ -85,5 +87,15 @@ export class PlatformAdminController {
   @Delete('invites/:id')
   revokeInvite(@Param('id') id: string) {
     return this.admin.revokeInvite(id);
+  }
+
+  @Get('leads')
+  listLeads(@Query() query: LeadListQueryDto) {
+    return this.admin.listLeads(query);
+  }
+
+  @Patch('leads/:id')
+  updateLead(@Param('id') id: string, @Body() dto: UpdateDemoLeadDto) {
+    return this.admin.updateLead(id, dto);
   }
 }

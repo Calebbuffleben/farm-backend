@@ -4,6 +4,7 @@ import {
   Plan,
   SubscriptionStatus,
   TenantStatus,
+  DemoLeadStatus,
 } from '@prisma/client';
 import {
   IsBoolean,
@@ -133,6 +134,17 @@ export class CreatePlatformInvitationDto {
   @IsOptional()
   @IsEnum(MembershipRole)
   role?: MembershipRole;
+}
+
+export class LeadListQueryDto extends PlatformListQueryDto {
+  @IsOptional()
+  @IsEnum(DemoLeadStatus)
+  status?: DemoLeadStatus;
+}
+
+export class UpdateDemoLeadDto {
+  @IsEnum(DemoLeadStatus)
+  status!: DemoLeadStatus;
 }
 
 export class BillingListQueryDto extends PlatformListQueryDto {

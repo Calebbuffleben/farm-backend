@@ -24,7 +24,9 @@ import {
   CreatePlatformInvitationDto,
   CreateTenantDto,
   InviteListQueryDto,
+  LeadListQueryDto,
   TenantListQueryDto,
+  UpdateDemoLeadDto,
   UpdateTenantBillingDto,
   UpdateTenantDto,
   UserListQueryDto,
@@ -472,6 +474,71 @@ export class PlatformAdminService {
         },
       });
       return invite;
+    });
+  }
+
+  listLeads(query: LeadListQueryDto) {
+    return this.tenantCtx.runWithTenantBypass(async () => {
+      const { skip, take } = page(query.page, query.limit);
+      const where: Prisma.DemoLeadWhereInput = {
+        status: query.status,
+        ...(query.q
+          ? {
+              OR: [
+                { name: { contains: query.q, mode: 'insensitive' } },
+                { company: { contains: query.q, mode: 'insensitive' } },
+                { email: { contains: query.q, mode: 'insensitive' } },
+                { phone: { contains: query.q, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      };
+      const [total, items] = await Promise.all([
+        this.prisma.demoLead.count({ where }),
+        this.prisma.demoLead.findMany({
+          where,
+          skip,
+          take,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            name: true,
+            company: true,
+            email: true,
+            phone: true,
+            status: true,
+            consentAt: true,
+            utmSource: true,
+            utmMedium: true,
+            utmCampaign: true,
+            utmContent: true,
+            utmTerm: true,
+            gclid: true,
+            createdAt: true,
+          },
+        }),
+      ]);
+      return { total, items };
+    });
+  }
+
+  updateLead(id: string, dto: UpdateDemoLeadDto) {
+    return this.tenantCtx.runWithTenantBypass(async () => {
+      const existing = await this.prisma.demoLead.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('Lead not found');
+      return this.prisma.demoLead.update({
+        where: { id },
+        data: { status: dto.status },
+        select: {
+          id: true,
+          name: true,
+          company: true,
+          email: true,
+          phone: true,
+          status: true,
+          createdAt: true,
+        },
+      });
     });
   }
 }

@@ -24,6 +24,7 @@ function row(overrides: Partial<DealRow> = {}): DealRow {
     rtvName: 'Ana',
     stage: 'NEGOCIACAO',
     stageConfidence: 0.8,
+    evidenceMessageId: 'msg-1',
     contextSummary: 'Quer fechar defensivo antes do plantio.',
     producerPosition: 'Quer comprar se o prazo atender.',
     dealChange: null,

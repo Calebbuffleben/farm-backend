@@ -63,6 +63,11 @@ class PatchFactDto {
   status!: FactStatus;
 }
 
+class DecideInterventionDto {
+  @IsIn(['ASSUME', 'DELEGATE', 'DISMISS'])
+  decision!: 'ASSUME' | 'DELEGATE' | 'DISMISS';
+}
+
 class DiscountReplyDto {
   @IsString()
   @IsNotEmpty()
@@ -82,7 +87,7 @@ export class DashboardController {
     @Query() query: HomeQueryDto,
   ) {
     if (!user) throw new UnauthorizedException();
-    return this.dashboard.home(user.tenantId, query.days ?? 7, {
+    return this.dashboard.home(user.tenantId, user.userId, query.days ?? 7, {
       rtvUserId: query.rtvUserId,
       farmId: query.farmId,
       crop: query.crop,
@@ -110,6 +115,26 @@ export class DashboardController {
   ) {
     if (!user) throw new UnauthorizedException();
     return this.dashboard.getFact(user.tenantId, user.userId, factId);
+  }
+
+  @Get('interventions/:id')
+  @SkipThrottle()
+  getIntervention(
+    @CurrentUser() user: TenantContext | undefined,
+    @Param('id') interventionId: string,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    return this.dashboard.getIntervention(user.tenantId, interventionId);
+  }
+
+  @Patch('interventions/:id')
+  decideIntervention(
+    @CurrentUser() user: TenantContext | undefined,
+    @Param('id') interventionId: string,
+    @Body() dto: DecideInterventionDto,
+  ) {
+    if (!user) throw new UnauthorizedException();
+    return this.dashboard.decideIntervention(user, interventionId, dto.decision);
   }
 
   @Patch('facts/:id')

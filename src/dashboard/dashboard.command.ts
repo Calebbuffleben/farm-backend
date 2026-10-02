@@ -32,6 +32,7 @@ export interface DealRow {
   rtvName: string | null;
   stage: DealStage;
   stageConfidence: number;
+  evidenceMessageId: string;
   contextSummary: string;
   producerPosition: string | null;
   dealChange: string | null;
